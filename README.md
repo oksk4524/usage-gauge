@@ -9,7 +9,7 @@ Codex, Claude, Grok and Antigravity (Gemini, and Claude/GPT inside Antigravity).
 
 - Glass ring gauges docked on the taskbar, with time left until each weekly reset.
 - Hides instantly over fullscreen apps, stays above the taskbar.
-- About 30 MB RAM and well under 1% of one CPU core. One ~60 KB executable, no runtime to install.
+- About 30 MB RAM and well under 1% of one CPU core. One ~70 KB executable, no runtime to install.
 - No third-party helper: it reads usage straight from each service with the login the official tool already saved on your PC.
 - Only shows the services you actually use (a gauge appears when that tool's login is on your PC); hide any of them from the right-click menu.
 - Follows the display scaling in effect when it starts (100-300%) and light/dark taskbars.
@@ -67,6 +67,17 @@ Uninstall: `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall`
 Drag the widget to move it (the position is remembered). Right-click for refresh, language, which gauges to show, and quit.
 Hover for exact reset times.
 
+## Known limitations
+
+- **Codex** logins kept in the OS credential store (`cli_auth_credentials_store = "keyring"` or `"auto"` in Codex's
+  `config.toml`) are not read; the default file storage (`~/.codex/auth.json`) is.
+- **Claude Code** on Windows keeps its login in `~/.claude/.credentials.json`, which is what is read. Other storage
+  (e.g. custom keychains) is not supported.
+- **Antigravity**: if `agy` is installed but not signed in, the two Antigravity gauges show an error; sign in to `agy` once.
+- The widget reads files that contain logins and talks to the network. A few antivirus products flag that combination
+  for unsigned home-built programs. The full source is the single file `UsageGauge.cs`; build it yourself with `install.ps1`.
+- Unofficial and unaffiliated: it uses the same internal endpoints as the official tools, which may change or stop
+  working at any time. Use at your own risk.
 ## Notes
 
 - Scaling is read once at start-up. After changing display scaling, or when moving the widget to a monitor with a

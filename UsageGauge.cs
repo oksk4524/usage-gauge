@@ -925,7 +925,17 @@ class GaugeForm : Form
     {
         var b = Screen.PrimaryScreen.Bounds; var wa = Screen.PrimaryScreen.WorkingArea;
         int bottom = b.Bottom - wa.Bottom, top = wa.Top - b.Top, left = wa.Left - b.Left, right = b.Right - wa.Right;
+        // sit just left of the clock/tray area, so it never lands on the (often centered) app icons
         int x = Math.Max(b.Left, b.Right - PW - (int)(300 * S));
+        try
+        {
+            IntPtr tray = Native.FindWindow("Shell_TrayWnd", null);
+            IntPtr notify = tray == IntPtr.Zero ? IntPtr.Zero : Native.FindWindowEx(tray, IntPtr.Zero, "TrayNotifyWnd", null);
+            Native.RECT nr;
+            if (notify != IntPtr.Zero && Native.GetWindowRect(notify, out nr) && nr.R - nr.L > 0 && nr.L > b.Left + PW)
+                x = nr.L - PW - (int)(4 * S);
+        }
+        catch { }
         if (top > bottom && top >= left && top >= right && top >= PH)
             return new Point(x, b.Top + (top - PH) / 2);                       // taskbar on top: sit inside it
         if (bottom >= PH || (bottom >= left && bottom >= right && bottom > 0))
