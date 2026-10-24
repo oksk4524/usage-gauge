@@ -1,0 +1,6 @@
+*.exe
+*.log
+*.tmp
+position.txt
+preview.png
+*.flag
