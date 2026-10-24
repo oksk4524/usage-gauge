@@ -46,6 +46,16 @@ static class Native
     [DllImport("user32.dll")] public static extern IntPtr SetWinEventHook(uint evMin, uint evMax, IntPtr mod, WinEventProc proc, uint pid, uint tid, uint flags);
     [DllImport("user32.dll")] public static extern bool UnhookWinEvent(IntPtr hook);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+    // Windows light mode for the taskbar (used when the glass backdrop can't be sampled)
+    public static bool LightTaskbar()
+    {
+        try
+        {
+            using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+            { var v = k != null ? k.GetValue("SystemUsesLightTheme") : null; return v is int && (int)v == 1; }
+        }
+        catch { return false; }
+    }
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
@@ -170,6 +180,13 @@ static class Usage
     static readonly string Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     const int TIMEOUT_MS = 12 * 1000;
     static readonly object ClaudeGate = new object(), GrokGate = new object();
+
+    static string CodexAuth() { return Path.Combine(Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(Home, ".codex"), "auth.json"); }
+    static string ClaudeCred() { return Path.Combine(Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") ?? Path.Combine(Home, ".claude"), ".credentials.json"); }
+    static string GrokAuth() { return Path.Combine(Environment.GetEnvironmentVariable("GROK_HOME") ?? Path.Combine(Home, ".grok"), "auth.json"); }
+    public static bool HasCodex() { return File.Exists(CodexAuth()); }
+    public static bool HasClaude() { return File.Exists(ClaudeCred()); }
+    public static bool HasGrok() { return File.Exists(GrokAuth()); }
 
     // ---------- Codex (ChatGPT login of the Codex CLI / app) ----------
     // Read-only: the Codex CLI owns refreshing this login (its access token lives ~10 days).
@@ -488,9 +505,51 @@ class GaugeForm : Form
     const int AG_EVERY_MS = 15 * 60 * 1000;                              // agy is heavy: refresh it less often
     static double lastAgMs = -AG_EVERY_MS;                                // monotonic (Clock), immune to clock changes
     const int STALE_MAIN_MIN = 12, STALE_AG_MIN = 35;                    // amber dot only once data is really old
-    const int W = PADX + N * BLOCK + (N - 1) * SEP + PADX - 2;
     const int SH = 4;                               // shadow margin
-    const int WW = W + SH * 2, HH = H + SH * 2;
+    // Logical size (at 100% scaling) depends on how many gauges are shown; physical size = logical x S.
+    static int W, WW, HH = H + SH * 2, PW, PH;
+    static float S = 1f;                            // display scaling (1.0 = 100%, 1.5 = 150%)
+    static int[] Vis = { 0, 1, 2, 3, 4 };           // indexes of the gauges currently shown
+    static void Relayout(int count)
+    {
+        count = Math.Max(1, count);
+        W = PADX + count * BLOCK + (count - 1) * SEP + PADX - 2;
+        WW = W + SH * 2; HH = H + SH * 2;
+        PW = (int)Math.Ceiling(WW * S); PH = (int)Math.Ceiling(HH * S);
+    }
+
+    // A gauge is shown when its service is set up on this PC and the user hasn't hidden it.
+    static readonly string HiddenFile = Path.Combine(Log.Dir, "hidden.txt");
+    static HashSet<string> Hidden = new HashSet<string>();
+    static void LoadHidden()
+    {
+        try { if (File.Exists(HiddenFile)) Hidden = new HashSet<string>(File.ReadAllText(HiddenFile).Split(new[] { ',', ' ', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)); } catch { }
+    }
+    static void SaveHidden() { try { File.WriteAllText(HiddenFile, string.Join(",", Hidden)); } catch { } }
+    static bool Available(int i)
+    {
+        return i == 0 ? Usage.HasCodex() : i == 1 ? Usage.HasClaude() : i == 2 ? Usage.HasGrok() : Usage.FindAgy() != null;
+    }
+    static int[] ComputeVisible()
+    {
+        var v = new List<int>();
+        for (int i = 0; i < N; i++) if (!Hidden.Contains(Ids[i]) && Available(i)) v.Add(i);
+        if (v.Count == 0) { v.Add(0); v.Add(1); }   // nothing set up: show Codex/Claude so the tooltip explains why
+        return v.ToArray();
+    }
+    static bool Shown_(string id) { int i = Array.IndexOf(Ids, id); return Array.IndexOf(Vis, i) >= 0; }
+    // Re-check which gauges to show; resize the window when that changes.
+    void UpdateVisible()
+    {
+        var v = ComputeVisible();
+        if (v.Length == Vis.Length && Array.TrueForAll(v, i => Array.IndexOf(Vis, i) >= 0)) return;
+        int right = Left + Width;
+        Vis = v; Relayout(Vis.Length);
+        Size = new Size(PW, PH);
+        Location = ClampToScreens(new Point(right - PW, Top));   // keep the right edge where it was
+        SavePos();
+        if (!GrabBackdrop()) Render();
+    }
 
     // ---- timing ----
     const int REFRESH_MS = 5 * 60 * 1000;           // quota poll
@@ -556,7 +615,12 @@ class GaugeForm : Form
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
-        Size = new Size(WW, HH);
+        try { using (var sg = Graphics.FromHwnd(IntPtr.Zero)) S = Math.Max(1f, Math.Min(3f, sg.DpiX / 96f)); } catch { }
+        float so; if (float.TryParse(Environment.GetEnvironmentVariable("USAGEGAUGE_SCALE"), NumberStyles.Float, CultureInfo.InvariantCulture, out so) && so >= 1 && so <= 3) S = so;   // testing aid
+        LoadHidden();
+        Vis = ComputeVisible();
+        Relayout(Vis.Length);
+        Size = new Size(PW, PH);
         Location = ClampToScreens(LoadPos());
         tip.InitialDelay = 350; tip.AutoPopDelay = 20000;
 
@@ -737,22 +801,22 @@ class GaugeForm : Form
     {
         var b = Screen.PrimaryScreen.Bounds; var wa = Screen.PrimaryScreen.WorkingArea;
         int bottom = b.Bottom - wa.Bottom, top = wa.Top - b.Top, left = wa.Left - b.Left, right = b.Right - wa.Right;
-        int x = Math.Max(b.Left, b.Right - WW - 300);
-        if (top > bottom && top >= left && top >= right && top >= HH)
-            return new Point(x, b.Top + (top - HH) / 2);                       // taskbar on top: sit inside it
-        if (bottom >= HH || (bottom >= left && bottom >= right && bottom > 0))
-            return new Point(x, b.Bottom - bottom + (bottom - HH) / 2);        // bottom (normal)
+        int x = Math.Max(b.Left, b.Right - PW - (int)(300 * S));
+        if (top > bottom && top >= left && top >= right && top >= PH)
+            return new Point(x, b.Top + (top - PH) / 2);                       // taskbar on top: sit inside it
+        if (bottom >= PH || (bottom >= left && bottom >= right && bottom > 0))
+            return new Point(x, b.Bottom - bottom + (bottom - PH) / 2);        // bottom (normal)
         // vertical taskbar (too narrow for the strip) or none: bottom-right corner of the work area
-        return new Point(Math.Max(wa.Left, wa.Right - WW - 12), wa.Bottom - HH - 12);
+        return new Point(Math.Max(wa.Left, wa.Right - PW - 12), wa.Bottom - PH - 12);
     }
     static Point ClampToScreens(Point p)
     {
-        var center = new Point(p.X + WW / 2, p.Y + HH / 2);
+        var center = new Point(p.X + PW / 2, p.Y + PH / 2);
         foreach (var s in Screen.AllScreens)
             if (s.Bounds.Contains(center))
             {
                 var b0 = s.Bounds;   // keep the whole widget on that monitor
-                return new Point(Math.Max(b0.Left, Math.Min(p.X, b0.Right - WW)), Math.Max(b0.Top, Math.Min(p.Y, b0.Bottom - HH)));
+                return new Point(Math.Max(b0.Left, Math.Min(p.X, b0.Right - PW)), Math.Max(b0.Top, Math.Min(p.Y, b0.Bottom - PH)));
             }
         // off every screen (monitor unplugged / resolution change): dock to the primary taskbar
         return DefaultPos();
@@ -846,7 +910,8 @@ class GaugeForm : Form
     double lastLocMs = -1000;
     void RefreshCachedState()
     {
-        try { myScreen = Screen.FromPoint(new Point(Left + WW / 2, Top + HH / 2)).Bounds; } catch { }
+        try { myScreen = Screen.FromPoint(new Point(Left + PW / 2, Top + PH / 2)).Bounds; } catch { }
+        lightBg = backdrop == null ? Native.LightTaskbar() : lightBg;
         try
         {
             var abd = new Native.APPBARDATA { cbSize = (uint)Marshal.SizeOf(typeof(Native.APPBARDATA)) };
@@ -938,9 +1003,10 @@ class GaugeForm : Form
         Bitmap small = null;
         try
         {
-            using (var raw = new Bitmap(W, H, PixelFormat.Format32bppArgb))
+            int pw = (int)Math.Round(W * S), ph = (int)Math.Round(H * S), off = (int)Math.Round(SH * S);
+            using (var raw = new Bitmap(pw, ph, PixelFormat.Format32bppArgb))
             {
-                using (var g = Graphics.FromImage(raw)) g.CopyFromScreen(Left + SH, Top + SH, 0, 0, new Size(W, H));
+                using (var g = Graphics.FromImage(raw)) g.CopyFromScreen(Left + off, Top + off, 0, 0, new Size(pw, ph));
                 int sw = Math.Max(2, W / 6), sh = Math.Max(2, H / 6);
                 small = new Bitmap(sw, sh, PixelFormat.Format32bppArgb);
                 using (var g = Graphics.FromImage(small))
@@ -948,9 +1014,17 @@ class GaugeForm : Form
                 {
                     ia.SetWrapMode(WrapMode.TileFlipXY);
                     g.InterpolationMode = InterpolationMode.HighQualityBilinear;
-                    g.DrawImage(raw, new Rectangle(0, 0, sw, sh), 0, 0, W, H, GraphicsUnit.Pixel, ia);
+                    g.DrawImage(raw, new Rectangle(0, 0, sw, sh), 0, 0, pw, ph, GraphicsUnit.Pixel, ia);
                 }
             }
+            // light or dark behind us? (pick text colors to match)
+            double lum = 0; int nPix = 0;
+            for (int yy = 0; yy < small.Height; yy++)
+                for (int xx = 0; xx < small.Width; xx++)
+                { var px = small.GetPixel(xx, yy); lum += (0.2126 * px.R + 0.7152 * px.G + 0.0722 * px.B) / 255.0; nPix++; }
+            if (nPix > 0) lightBg = lum / nPix > 0.55;
+            string forced = Environment.GetEnvironmentVariable("USAGEGAUGE_THEME");   // testing aid: light | dark
+            if (forced == "light") lightBg = true; else if (forced == "dark") lightBg = false;
             var old = backdrop; backdrop = small; small = null;
             if (old != null) old.Dispose();
         }
@@ -972,12 +1046,14 @@ class GaugeForm : Form
         bool force = Interlocked.Exchange(ref forceAgPending, 0) == 1;
         int gen = Interlocked.Increment(ref generation);
         double nowMs = Clock.Elapsed.TotalMilliseconds;
-        bool includeAg = force || nowMs - lastAgMs >= AG_EVERY_MS;
+        bool agShown = Shown_("ag-gemini") || Shown_("ag-3p");
+        bool includeAg = agShown && (force || nowMs - lastAgMs >= AG_EVERY_MS);
+        bool[] want = { Shown_("codex"), Shown_("claude"), Shown_("grok") };
         if (includeAg) lastAgMs = nowMs;
         ThreadPool.QueueUserWorkItem(delegate
         {
             Dictionary<string, Quota> got = null;
-            try { got = FetchAll(includeAg); }
+            try { got = FetchAll(includeAg, want); }
             catch (Exception ex) { Log.Write("refresh: " + ex.Message); }
             try
             {
@@ -1018,6 +1094,7 @@ class GaugeForm : Form
             if (qs[i].Failing || !qs[i].Ok) anyBad = true;
         }
         loading = false;
+        UpdateVisible();   // a service may have been set up (or removed) since the last round
         agFailedLast = got.ContainsKey("ag-gemini") && (!got["ag-gemini"].Ok || !got["ag-3p"].Ok);
         // at most ONE quick retry per 5-min cycle (a broken provider must not trigger a CLI run every minute)
         if (anyBad && !retriedOnce) { retriedOnce = true; retryTimer.Start(); }
@@ -1070,13 +1147,14 @@ class GaugeForm : Form
     static string NameOf(string id) { int i = Array.IndexOf(Ids, id); return i >= 0 ? Names[i] : id; }
 
     // One refresh: Codex, Claude and Grok over HTTPS (in parallel) and, when due, Antigravity via `agy -p /usage`.
-    static Dictionary<string, Quota> FetchAll(bool includeAg)
+    static Dictionary<string, Quota> FetchAll(bool includeAg) { return FetchAll(includeAg, new[] { true, true, true }); }
+    static Dictionary<string, Quota> FetchAll(bool includeAg, bool[] want)
     {
         var res = new Dictionary<string, Quota>();
         var jobs = new List<KeyValuePair<string, Func<Quota>>>();
-        jobs.Add(new KeyValuePair<string, Func<Quota>>("codex", Usage.Codex));
-        jobs.Add(new KeyValuePair<string, Func<Quota>>("claude", Usage.Claude));
-        jobs.Add(new KeyValuePair<string, Func<Quota>>("grok", Usage.Grok));
+        if (want[0]) jobs.Add(new KeyValuePair<string, Func<Quota>>("codex", Usage.Codex));
+        if (want[1]) jobs.Add(new KeyValuePair<string, Func<Quota>>("claude", Usage.Claude));
+        if (want[2]) jobs.Add(new KeyValuePair<string, Func<Quota>>("grok", Usage.Grok));
         Quota[] agOut = null;
         var threads = new List<KeyValuePair<string, Thread>>();
         var results = new Dictionary<string, Quota>();
@@ -1106,7 +1184,7 @@ class GaugeForm : Form
             if (!t.Value.Join(left)) lock (results) if (!results.ContainsKey(t.Key)) results[t.Key] = Err(NameOf(t.Key), "Timed out");
         }
         lock (results) foreach (var kv in results) res[kv.Key] = kv.Value;
-        foreach (var id in MainIds) if (!res.ContainsKey(id)) res[id] = Err(NameOf(id), "Timed out");
+        for (int i = 0; i < MainIds.Length; i++) if (want[i] && !res.ContainsKey(MainIds[i])) res[MainIds[i]] = Err(NameOf(MainIds[i]), "Timed out");
 
         if (agThread != null)
         {
@@ -1286,6 +1364,20 @@ class GaugeForm : Form
             lang.DropDownItems.Add(it);
         }
         menu.Items.Add(lang);
+        var gauges = new ToolStripMenuItem(L.T("표시할 항목", "Gauges"));
+        for (int i = 0; i < N; i++)
+        {
+            int idx = i; bool avail = Available(i);
+            var it = new ToolStripMenuItem(Names[i] + (avail ? "" : L.T("  (이 PC에 로그인 없음)", "  (not set up on this PC)")))
+                { Checked = avail && !Hidden.Contains(Ids[i]), Enabled = avail };
+            it.Click += delegate
+            {
+                if (Hidden.Contains(Ids[idx])) Hidden.Remove(Ids[idx]); else Hidden.Add(Ids[idx]);
+                SaveHidden(); UpdateVisible(); UpdateTip(); Refresh_(true);
+            };
+            gauges.DropDownItems.Add(it);
+        }
+        menu.Items.Add(gauges);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(L.T("종료", "Quit"), null, delegate { Close(); });
     }
@@ -1293,7 +1385,7 @@ class GaugeForm : Form
     void UpdateTip()
     {
         var sbt = new StringBuilder();
-        for (int i = 0; i < N; i++) sbt.Append(Line(qs[i])).Append("\n");
+        foreach (int i in Vis) sbt.Append(Line(qs[i])).Append("\n");
         tip.SetToolTip(this, sbt.ToString() + L.T(
             "\nCodex·Claude·Grok 5분, Antigravity 15분마다 갱신 (자리 비우면 쉬었다가 돌아오면 바로 갱신)\n주황 점: 값이 오래됐거나 갱신이 계속 실패하는 중\n드래그: 이동 · 우클릭: 새로고침/언어/종료",
             "\nCodex·Claude·Grok every 5 min, Antigravity every 15 min (paused while you're away)\nAmber dot: the value is out of date or updates keep failing\nDrag: move · Right-click: refresh/language/quit"));
@@ -1369,7 +1461,7 @@ class GaugeForm : Form
         if (dragging && !animTimer.Enabled) return;   // don't fight the move loop
         try
         {
-            using (var bmp = new Bitmap(WW, HH, PixelFormat.Format32bppArgb))
+            using (var bmp = new Bitmap(PW, PH, PixelFormat.Format32bppArgb))
             {
                 using (var g = Graphics.FromImage(bmp))
                 {
@@ -1378,6 +1470,7 @@ class GaugeForm : Form
                     g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                     g.CompositingQuality = CompositingQuality.HighQuality;
                     g.Clear(Color.Transparent);
+                    g.ScaleTransform(S, S);          // draw in 100% units, scaled to the display
                     g.TranslateTransform(SH, SH);
                     DrawAll(g);
                 }
@@ -1402,12 +1495,13 @@ class GaugeForm : Form
     }
     void DumpPreview(string file)
     {
-        using (var bmp = new Bitmap(WW, HH, PixelFormat.Format32bppArgb))
+        using (var bmp = new Bitmap(PW, PH, PixelFormat.Format32bppArgb))
         {
             using (var g = Graphics.FromImage(bmp))
             {
                 g.SmoothingMode = SmoothingMode.AntiAlias; g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.CompositingQuality = CompositingQuality.HighQuality;
+                g.ScaleTransform(S, S);
                 g.TranslateTransform(SH, SH);
                 DrawAll(g);
             }
@@ -1418,10 +1512,11 @@ class GaugeForm : Form
     void DrawAll(Graphics g)
     {
         DrawPanel(g);
-        for (int i = 0; i < N; i++)
+        for (int k = 0; k < Vis.Length; k++)
         {
-            float x = PADX + i * (BLOCK + SEP);
-            if (i > 0) DrawDivider(g, x - SEP / 2f);
+            int i = Vis[k];
+            float x = PADX + k * (BLOCK + SEP);
+            if (k > 0) DrawDivider(g, x - SEP / 2f);
             DrawBlock(g, qs[i], shown[i], x, i);
         }
     }
@@ -1454,11 +1549,17 @@ class GaugeForm : Form
             using (var sb = new LinearGradientBrush(sheen, Color.FromArgb(12, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), LinearGradientMode.Vertical))
                 g.FillRectangle(sb, sheen);
             g.Restore(state);
-            using (var bb = new LinearGradientBrush(new RectangleF(0, 0, W, H), Color.FromArgb((int)(130 + 40 * hoverT), 255, 255, 255), Color.FromArgb(22, 255, 255, 255), 35f))
+            using (var bb = lightBg
+                ? new LinearGradientBrush(new RectangleF(0, 0, W, H), Color.FromArgb((int)(55 + 25 * hoverT), 0, 0, 0), Color.FromArgb(25, 0, 0, 0), 35f)
+                : new LinearGradientBrush(new RectangleF(0, 0, W, H), Color.FromArgb((int)(130 + 40 * hoverT), 255, 255, 255), Color.FromArgb(22, 255, 255, 255), 35f))
             using (var pen = new Pen(bb, 1f))
                 g.DrawPath(pen, path);
         }
     }
+
+    // Text/line color that contrasts with what is behind the widget.
+    bool lightBg = false;
+    Color Ink(int alpha) { return lightBg ? Color.FromArgb(alpha, 0, 0, 0) : Color.FromArgb(alpha, 255, 255, 255); }
 
     void DrawDivider(Graphics g, float x)
     {
@@ -1466,7 +1567,7 @@ class GaugeForm : Form
         using (var div = new LinearGradientBrush(new RectangleF(rect.X, rect.Y - 1, 1, rect.Height + 2), Color.Transparent, Color.Transparent, LinearGradientMode.Vertical))
         {
             var cb = new ColorBlend(3);
-            cb.Colors = new[] { Color.FromArgb(0, 255, 255, 255), Color.FromArgb(45, 255, 255, 255), Color.FromArgb(0, 255, 255, 255) };
+            cb.Colors = new[] { Ink(0), Ink(45), Ink(0) };
             cb.Positions = new[] { 0f, 0.5f, 1f };
             div.InterpolationColors = cb;
             g.FillRectangle(div, rect);
@@ -1498,7 +1599,7 @@ class GaugeForm : Form
 
         var ring = new RectangleF(x, cy - RING / 2f, RING, RING);
         var arcRect = RectangleF.Inflate(ring, -STROKE / 2f, -STROKE / 2f);
-        using (var tp = new Pen(Color.FromArgb(38, 255, 255, 255), STROKE)) g.DrawEllipse(tp, arcRect);
+        using (var tp = new Pen(Ink(lightBg ? 40 : 38), STROKE)) g.DrawEllipse(tp, arcRect);
         float sweep = (float)(360.0 * Math.Max(0, Math.Min(100, shown)) / 100.0);
         if (ok && sweep > 0.5f)
         {
@@ -1519,7 +1620,19 @@ class GaugeForm : Form
         else if (idx == 4 && agLogo != null) g.DrawImage(agLogo, lr);
         else if (idx == 0 && codexLogo != null) g.DrawImage(codexLogo, lr);
         else if (idx == 1 && claudeLogo != null) DrawLogoPath(g, claudeLogo, lr, Color.FromArgb(217, 119, 87));
-        else if (idx == 2 && grokLogo != null) g.DrawImage(grokLogo, RectangleF.Inflate(lr, -0.5f, -0.5f));
+        else if (idx == 2 && grokLogo != null)
+        {
+            var gr = RectangleF.Inflate(lr, -0.5f, -0.5f);
+            if (!lightBg) g.DrawImage(grokLogo, gr);
+            else using (var ia = new ImageAttributes())   // the Grok mark is white: draw it dark on a light taskbar
+            {
+                ia.SetColorMatrix(new ColorMatrix(new[] {
+                    new float[] { -1, 0, 0, 0, 0 }, new float[] { 0, -1, 0, 0, 0 }, new float[] { 0, 0, -1, 0, 0 },
+                    new float[] { 0, 0, 0, 1, 0 }, new float[] { 0.9f, 0.9f, 0.9f, 0, 1 } }));
+                g.DrawImage(grokLogo, new[] { gr.Location, new PointF(gr.Right, gr.Top), new PointF(gr.Left, gr.Bottom) },
+                    new RectangleF(0, 0, grokLogo.Width, grokLogo.Height), GraphicsUnit.Pixel, ia);
+            }
+        }
 
         float tx = ring.Right + TEXT_GAP;
         string num = loading ? "··" : (q.Ok ? ((int)Math.Round(shown)).ToString() : "!");
@@ -1540,8 +1653,8 @@ class GaugeForm : Form
             var b1 = p1.GetBounds(); var b2 = p2.GetBounds();
             Shift(p1, tx - b1.X, base1);
             Shift(p2, tx - b2.X, base2);
-            using (var wb = new SolidBrush(Color.FromArgb(250, 255, 255, 255))) g.FillPath(wb, p1);
-            using (var sb = new SolidBrush(Color.FromArgb(222, 222, 222, 232))) g.FillPath(sb, p2);
+            using (var wb = new SolidBrush(lightBg ? Color.FromArgb(245, 22, 22, 28) : Color.FromArgb(250, 255, 255, 255))) g.FillPath(wb, p1);
+            using (var sb = new SolidBrush(lightBg ? Color.FromArgb(225, 70, 70, 82) : Color.FromArgb(222, 222, 222, 232))) g.FillPath(sb, p2);
         }
     }
 
@@ -1554,7 +1667,7 @@ class GaugeForm : Form
             memDc = Native.CreateCompatibleDC(screenDc);
             hBmp = bmp.GetHbitmap(Color.FromArgb(0));
             old = Native.SelectObject(memDc, hBmp);
-            var size = new Native.SIZE(WW, HH); var src = new Native.POINT(0, 0); var pos = new Native.POINT(Left, Top);
+            var size = new Native.SIZE(bmp.Width, bmp.Height); var src = new Native.POINT(0, 0); var pos = new Native.POINT(Left, Top);
             var blend = new Native.BLEND { Op = 0, Flags = 0, Alpha = 255, Format = 1 };
             Native.UpdateLayeredWindow(Handle, screenDc, ref pos, ref size, memDc, ref src, 0, ref blend, 2);
         }

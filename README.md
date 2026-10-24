@@ -5,10 +5,14 @@ Codex, Claude, Grok and Antigravity (Gemini, and Claude/GPT inside Antigravity).
 
 ![widget](docs/widget.png)
 
+![widget on a light taskbar](docs/widget-light.png)
+
 - Glass ring gauges docked on the taskbar, with time left until each weekly reset.
 - Hides instantly over fullscreen apps, stays above the taskbar.
 - About 30 MB RAM and well under 1% of one CPU core. One ~60 KB executable, no runtime to install.
 - No third-party helper: it reads usage straight from each service with the login the official tool already saved on your PC.
+- Only shows the services you actually use (a gauge appears when that tool's login is on your PC); hide any of them from the right-click menu.
+- Follows display scaling (100-300%) and light/dark taskbars.
 - English or Korean, following the Windows display language (any other language falls back to English). Override it from the right-click menu.
 
 ## Where the numbers come from
@@ -42,10 +46,14 @@ Requires Windows 10/11. The C# compiler that ships with Windows is enough.
 ```powershell
 git clone https://github.com/oksk4524/usage-gauge
 cd usage-gauge
-.\install.ps1 -Autostart
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Autostart
 ```
 
-Drag the widget to move it (the position is remembered). Right-click for refresh, language and quit.
+No git? Use **Code > Download ZIP**, unzip, and run the same last line in that folder.
+
+Uninstall: `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall`
+
+Drag the widget to move it (the position is remembered). Right-click for refresh, language, which gauges to show, and quit.
 Hover for exact reset times.
 
 ## 한국어
@@ -56,10 +64,14 @@ Hover for exact reset times.
 
 - 각 서비스 공식 도구가 이 PC에 저장해 둔 로그인으로 사용량을 직접 읽어요. 다른 프로그램이 필요 없어요.
 - 전체 화면 앱 위에서는 바로 숨고, 메모리 약 30MB, CPU는 1% 미만이에요.
+- 이 PC에 로그인된 서비스만 칸이 나와요. 우클릭 메뉴 "표시할 항목"에서 숨길 수도 있어요.
+- 화면 배율(100~300%)과 밝은/어두운 작업표시줄에 맞춰 그려요.
 - Windows 표시 언어가 한국어면 한국어로, 그 외에는 영어로 나와요. 우클릭 메뉴에서 바꿀 수 있어요.
 - 주황 점: 값이 오래됐거나 갱신이 계속 실패하는 중이라는 뜻이에요. 원인은 `%LOCALAPPDATA%\UsageGauge\error.log`에 남아요.
 
-설치: 저장소를 받은 뒤 PowerShell에서 `.\install.ps1 -Autostart`
+설치: 저장소를 받은 뒤(또는 Code > Download ZIP) 그 폴더의 PowerShell에서
+`powershell -ExecutionPolicy Bypass -File .\install.ps1 -Autostart`  
+삭제: 같은 명령에 `-Uninstall`
 
 ## Credits
 

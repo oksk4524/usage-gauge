@@ -1,10 +1,22 @@
 # Builds UsageGauge with the C# compiler that ships with Windows (.NET Framework 4)
-# and installs it to %LOCALAPPDATA%\UsageGauge. Pass -Autostart to start it at sign-in.
-param([switch]$Autostart)
+# and installs it to %LOCALAPPDATA%\UsageGauge.
+#   -Autostart   also start it at sign-in
+#   -Uninstall   stop it, remove autostart and delete %LOCALAPPDATA%\UsageGauge
+# Run with:  powershell -ExecutionPolicy Bypass -File .\install.ps1 -Autostart
+param([switch]$Autostart, [switch]$Uninstall)
 $ErrorActionPreference = 'Stop'
 
 $src  = Join-Path $PSScriptRoot 'UsageGauge.cs'
 $dest = Join-Path $env:LOCALAPPDATA 'UsageGauge'
+
+if ($Uninstall) {
+    Get-Process UsageGauge -ErrorAction SilentlyContinue | Stop-Process -Force
+    Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name UsageGauge -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+    Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host 'UsageGauge removed.'
+    return
+}
 $csc  = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
 
