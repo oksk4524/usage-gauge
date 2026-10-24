@@ -1,4 +1,4 @@
-﻿// UsageGauge v11 - Codex / Claude / Grok / Antigravity weekly quota on the taskbar (glass ring gauges).
+﻿// UsageGauge - Codex / Claude / Grok / Antigravity weekly quota on the taskbar (glass ring gauges).
 // Hardened after code review: CLI timeout+kill, abandoned-mutex safe, no per-tick capture/render,
 // atomic position save, display/power events, no GDI+ object leaks, crash logging.
 using System;
@@ -180,21 +180,51 @@ static class Usage
     static readonly string Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     const int TIMEOUT_MS = 12 * 1000;
     static readonly object ClaudeGate = new object(), GrokGate = new object();
+    static readonly DateTime Epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
-    static string CodexAuth() { return Path.Combine(Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(Home, ".codex"), "auth.json"); }
-    static string ClaudeCred() { return Path.Combine(Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") ?? Path.Combine(Home, ".claude"), ".credentials.json"); }
-    static string GrokAuth() { return Path.Combine(Environment.GetEnvironmentVariable("GROK_HOME") ?? Path.Combine(Home, ".grok"), "auth.json"); }
+    // Opt-in: renew an expired Claude/Grok login on the user's behalf (off by default; see README).
+    static readonly string RenewFile = Path.Combine(Log.Dir, "renew-logins.txt");
+    public static bool RenewLogins;
+    public static void LoadSettings() { try { RenewLogins = File.Exists(RenewFile) && File.ReadAllText(RenewFile).Trim() == "on"; } catch { } }
+    public static void SetRenew(bool on)
+    {
+        RenewLogins = on;
+        try { Directory.CreateDirectory(Log.Dir); File.WriteAllText(RenewFile, on ? "on" : "off"); } catch { }
+    }
+
+    static string EnvDir(string var, string fallback)
+    {
+        string v = Environment.GetEnvironmentVariable(var);
+        return string.IsNullOrEmpty(v) || v.Trim().Length == 0 ? Path.Combine(Home, fallback) : v.Trim();   // empty = unset
+    }
+    static string CodexAuth() { return Path.Combine(EnvDir("CODEX_HOME", ".codex"), "auth.json"); }
+    static string ClaudeCred() { return Path.Combine(EnvDir("CLAUDE_CONFIG_DIR", ".claude"), ".credentials.json"); }
+    static string GrokAuth() { return Path.Combine(EnvDir("GROK_HOME", ".grok"), "auth.json"); }
     public static bool HasCodex() { return File.Exists(CodexAuth()); }
     public static bool HasClaude() { return File.Exists(ClaudeCred()); }
     public static bool HasGrok() { return File.Exists(GrokAuth()); }
+
+    // Remove temp files a crash may have left next to the login files (they would contain a full login).
+    public static void CleanupTemps()
+    {
+        foreach (var p in new[] { ClaudeCred(), GrokAuth() })
+        {
+            try
+            {
+                string dir = Path.GetDirectoryName(p);
+                if (!Directory.Exists(dir)) continue;
+                foreach (var t in Directory.GetFiles(dir, Path.GetFileName(p) + ".ug*.tmp")) { try { File.Delete(t); } catch { } }
+            }
+            catch { }
+        }
+    }
 
     // ---------- Codex (ChatGPT login of the Codex CLI / app) ----------
     // Read-only: the Codex CLI owns refreshing this login (its access token lives ~10 days).
     public static Quota Codex()
     {
-        string path = Path.Combine(Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(Home, ".codex"), "auth.json");
         Dictionary<string, object> auth, tokens;
-        if (!TryReadJson(path, out auth) || !TryDict(auth, "tokens", out tokens)) return Fail("Codex login not found");
+        if (!TryReadJson(CodexAuth(), out auth) || !TryDict(auth, "tokens", out tokens)) return Fail("Codex login not found");
         string access = Str(tokens, "access_token"), account = Str(tokens, "account_id");
         if (access == null) return Fail("Codex login not found");
         var h = new Dictionary<string, string> { { "Authorization", "Bearer " + access } };
@@ -210,10 +240,9 @@ static class Usage
             if (!TryDict(rl, key, out w)) continue;
             if (Num(w, "limit_window_seconds") != 604800) continue;             // the 7-day window only
             double used = Num(w, "used_percent");
-            if (double.IsNaN(used)) break;
+            if (double.IsNaN(used)) continue;
             var q = Ok(100 - used);
-            double resetAt = Num(w, "reset_at");
-            if (!double.IsNaN(resetAt)) q.ResetsAt = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(resetAt);
+            object ra; if (w.TryGetValue("reset_at", out ra) && ra != null) q.ResetsAt = ParseTime(ra);
             return q;
         }
         return Fail("Codex weekly limit not found");
@@ -222,7 +251,7 @@ static class Usage
     // ---------- Claude (Claude Code login) ----------
     public static Quota Claude()
     {
-        string path = Path.Combine(Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") ?? Path.Combine(Home, ".claude"), ".credentials.json");
+        string path = ClaudeCred();
         string access = ClaudeToken(path, false);
         if (access == null) return Fail("Claude login not found");
         int status; string body = ClaudeGet(access, out status);
@@ -247,7 +276,8 @@ static class Usage
         return Http("GET", "https://api.anthropic.com/api/oauth/usage", new Dictionary<string, string> {
             { "Authorization", "Bearer " + access }, { "anthropic-beta", "oauth-2025-04-20" } }, null, null, out status);
     }
-    // Returns a usable access token, refreshing it the same way Claude Code does when it has expired.
+    // Returns the saved access token. Only if renewal is switched on, the token is past expiry
+    // (or rejected), and Claude Code hasn't renewed it meanwhile, it is renewed and written back.
     static string ClaudeToken(string path, bool rejected)
     {
         lock (ClaudeGate)
@@ -255,31 +285,44 @@ static class Usage
             Dictionary<string, object> root, o;
             if (!TryReadJson(path, out root) || !TryDict(root, "claudeAiOauth", out o)) return null;
             string access = Str(o, "accessToken"), refresh = Str(o, "refreshToken");
-            double expMs = Num(o, "expiresAt");
-            DateTime exp = double.IsNaN(expMs) ? DateTime.MaxValue : new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(expMs);
-            // Give Claude Code itself the first chance: only refresh once the token is a couple of minutes past expiry
-            // (or the server already rejected it). Re-read just before, in case Claude Code refreshed meanwhile.
-            if (!rejected && DateTime.UtcNow < exp.AddMinutes(2)) return access;
-            if (refresh == null) return rejected ? null : access;
+            DateTime? exp = EpochMs(Num(o, "expiresAt"));
+            if (!rejected && (exp == null || DateTime.UtcNow < exp.Value.AddMinutes(2))) return access;   // still valid (or unknown)
+            if (!RenewLogins || refresh == null) return rejected ? null : access;
+
+            // Claude Code may be renewing right now: wait a moment and look again before doing it ourselves.
+            Thread.Sleep(1500);
+            if (TryReadJson(path, out root) && TryDict(root, "claudeAiOauth", out o))
+            {
+                DateTime? exp2 = EpochMs(Num(o, "expiresAt"));
+                string access2 = Str(o, "accessToken");
+                if (access2 != null && access2 != access && exp2.HasValue && exp2.Value > DateTime.UtcNow) return access2;
+                refresh = Str(o, "refreshToken") ?? refresh;
+            }
+            if (!CanWrite(path)) { Log.Write("Claude login not renewed: login file is busy"); return rejected ? null : access; }
+
             var body = new Dictionary<string, object> {
                 { "grant_type", "refresh_token" }, { "refresh_token", refresh },
                 { "client_id", "9d1c250a-e61b-44d9-88ed-5944d1962f5e" } };
-            object sc; var scopes = o.TryGetValue("scopes", out sc) ? sc as object[] : null;
+            object sc; var scopes = o != null && o.TryGetValue("scopes", out sc) ? sc as object[] : null;
             if (scopes != null && scopes.Length > 0) body["scope"] = string.Join(" ", Array.ConvertAll(scopes, x => Convert.ToString(x)));
             int status; string resp = Http("POST", "https://platform.claude.com/v1/oauth/token", null,
                 new JavaScriptSerializer().Serialize(body), "application/json", out status);
             var j = status == 200 ? Parse(resp) : null;
             string na = j != null ? Str(j, "access_token") : null;
-            if (na == null) { Log.Write("Claude login refresh failed (" + status + ")"); return null; }
-            // write back exactly like Claude Code (other fields untouched), atomically
-            Dictionary<string, object> latest, lo;
-            if (TryReadJson(path, out latest) && TryDict(latest, "claudeAiOauth", out lo)) { root = latest; o = lo; }
-            o["accessToken"] = na;
-            string nr = Str(j, "refresh_token"); if (nr != null) o["refreshToken"] = nr;
-            double ttl = Num(j, "expires_in"); if (double.IsNaN(ttl)) ttl = 8 * 3600;
-            o["expiresAt"] = (long)(DateTime.UtcNow.AddSeconds(ttl) - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
-            if (!WriteJsonAtomic(path, root)) Log.Write("Claude login save failed");
-            else Log.Write("Claude login refreshed");
+            if (na == null) { Log.Write("Claude login renewal failed (HTTP " + status + ")"); return null; }
+            string nr = Str(j, "refresh_token") ?? refresh;
+            double ttl = Num(j, "expires_in"); if (double.IsNaN(ttl) || ttl <= 0) ttl = 8 * 3600;
+            long newExp = (long)(DateTime.UtcNow.AddSeconds(ttl) - Epoch).TotalMilliseconds;
+
+            // Patch only these three values in the original text, and only if nobody changed the login meanwhile.
+            string err = PatchFile(path, refresh, "\"claudeAiOauth\"", delegate(string text)
+            {
+                text = ReplaceJsonString(text, "accessToken", na);
+                text = ReplaceJsonString(text, "refreshToken", nr);
+                return ReplaceJsonNumber(text, "expiresAt", newExp);
+            });
+            if (err == null) Log.Write("Claude login renewed");
+            else Log.Write("Claude login renewed but NOT saved (" + err + "): run Claude Code once if it asks you to sign in");
             return na;
         }
     }
@@ -287,30 +330,29 @@ static class Usage
     // ---------- Grok (SuperGrok login of the Grok CLI) ----------
     public static Quota Grok()
     {
-        string path = Path.Combine(Environment.GetEnvironmentVariable("GROK_HOME") ?? Path.Combine(Home, ".grok"), "auth.json");
-        string access = GrokToken(path, false);
-        if (access == null) return Fail("Grok login not found");
+        string path = GrokAuth();
+        string err0;
+        string access = GrokToken(path, false, out err0);
+        if (access == null) return Fail(err0 ?? "Grok login not found");
         int status; string body = GrokGet(access, out status);
         if (status == 401)
         {
-            access = GrokToken(path, true);
-            if (access == null) return Fail("Grok login expired: run grok once to renew it");
+            access = GrokToken(path, true, out err0);
+            if (access == null) return Fail(err0 ?? "Grok login expired: run grok once to renew it");
             body = GrokGet(access, out status);
         }
         if (status == 401 || status == 403) return Fail("Grok login expired: run grok once to renew it");
         if (status != 200) return Fail(HttpError(status));
-        var j = Parse(body); Dictionary<string, object> c;
+        var j = Parse(body); Dictionary<string, object> c, period;
         if (j == null || !TryDict(j, "config", out c)) return Fail("Grok response format changed");
-        Dictionary<string, object> period;
-        if (TryDict(c, "currentPeriod", out period))
-        {
-            string type = Str(period, "type");
-            if (type != null && type != "USAGE_PERIOD_TYPE_WEEKLY") return Fail("Grok period is not weekly");
-        }
-        double used = Num(c, "creditUsagePercent");
-        if (double.IsNaN(used)) used = 0;                                     // field is omitted when nothing is used yet
+        if (!TryDict(c, "currentPeriod", out period) || Str(period, "type") != "USAGE_PERIOD_TYPE_WEEKLY")
+            return Fail("Grok weekly period not found");
+        double used;
+        object up;
+        if (!c.TryGetValue("creditUsagePercent", out up) || up == null) used = 0;   // omitted when nothing is used yet
+        else { used = Num(c, "creditUsagePercent"); if (double.IsNaN(used)) return Fail("Grok usage value is not a number"); }
         var q = Ok(100 - used);
-        object end; if (period != null && period.TryGetValue("end", out end) && end != null) q.ResetsAt = ParseTime(end);
+        object end; if (period.TryGetValue("end", out end) && end != null) q.ResetsAt = ParseTime(end);
         return q;
     }
     static string GrokGet(string access, out int status)
@@ -318,37 +360,125 @@ static class Usage
         return Http("GET", "https://cli-chat-proxy.grok.com/v1/billing?format=credits", new Dictionary<string, string> {
             { "Authorization", "Bearer " + access }, { "x-xai-token-auth", "xai-grok-cli" } }, null, null, out status);
     }
-    static string GrokToken(string path, bool rejected)
+    static string GrokToken(string path, bool rejected, out string error)
     {
+        error = null;
         lock (GrokGate)
         {
             Dictionary<string, object> root;
             if (!TryReadJson(path, out root)) return null;
-            string scope = null; Dictionary<string, object> e = null;
-            foreach (var kv in root)
-                if (kv.Key.StartsWith("https://auth.x.ai::") && kv.Value is Dictionary<string, object>) { scope = kv.Key; e = (Dictionary<string, object>)kv.Value; break; }
-            if (e == null) return null;
+            string scope; Dictionary<string, object> e;
+            if (!GrokEntry(root, out scope, out e, out error)) return null;
             string access = Str(e, "key"), refresh = Str(e, "refresh_token");
-            DateTime exp = DateTime.MaxValue; object ea;
-            if (e.TryGetValue("expires_at", out ea) && ea != null) { var t = ParseTime(ea); if (t.HasValue) exp = t.Value; }
-            if (!rejected && DateTime.UtcNow < exp.AddMinutes(2)) return access;   // let grok refresh it first
-            if (refresh == null) return rejected ? null : access;
+            DateTime? exp = null; object ea;
+            if (e.TryGetValue("expires_at", out ea) && ea != null) exp = ParseTime(ea);
+            if (!rejected && (exp == null || DateTime.UtcNow < exp.Value.AddMinutes(2))) return access;
+            if (!RenewLogins || refresh == null) return rejected ? null : access;
+
+            Thread.Sleep(1500);   // grok may be renewing right now
+            if (TryReadJson(path, out root) && GrokEntry(root, out scope, out e, out error))
+            {
+                string access2 = Str(e, "key"); DateTime? exp2 = null;
+                if (e.TryGetValue("expires_at", out ea) && ea != null) exp2 = ParseTime(ea);
+                if (access2 != null && access2 != access && exp2.HasValue && exp2.Value > DateTime.UtcNow) return access2;
+                refresh = Str(e, "refresh_token") ?? refresh;
+            }
+            if (!CanWrite(path)) { Log.Write("Grok login not renewed: login file is busy"); return rejected ? null : access; }
+
             string clientId = scope.Substring("https://auth.x.ai::".Length);
             string form = "grant_type=refresh_token&client_id=" + Uri.EscapeDataString(clientId) + "&refresh_token=" + Uri.EscapeDataString(refresh);
             int status; string resp = Http("POST", "https://auth.x.ai/oauth2/token", null, form, "application/x-www-form-urlencoded", out status);
             var j = status == 200 ? Parse(resp) : null;
             string na = j != null ? Str(j, "access_token") : null;
-            if (na == null) { Log.Write("Grok login refresh failed (" + status + ")"); return null; }
-            Dictionary<string, object> latest;
-            if (TryReadJson(path, out latest) && latest.ContainsKey(scope) && latest[scope] is Dictionary<string, object>) { root = latest; e = (Dictionary<string, object>)latest[scope]; }
-            e["key"] = na;
-            string nr = Str(j, "refresh_token"); if (nr != null) e["refresh_token"] = nr;
-            double ttl = Num(j, "expires_in"); if (double.IsNaN(ttl)) ttl = 3600;
-            e["expires_at"] = DateTime.UtcNow.AddSeconds(ttl).ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture);
-            if (!WriteJsonAtomic(path, root)) Log.Write("Grok login save failed");
-            else Log.Write("Grok login refreshed");
+            if (na == null) { Log.Write("Grok login renewal failed (HTTP " + status + ")"); return null; }
+            string nr = Str(j, "refresh_token") ?? refresh;
+            double ttl = Num(j, "expires_in"); if (double.IsNaN(ttl) || ttl <= 0) ttl = 3600;
+            string newExp = DateTime.UtcNow.AddSeconds(ttl).ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture);
+            string err = PatchFile(path, refresh, "\"" + scope + "\"", delegate(string text)
+            {
+                text = ReplaceJsonString(text, "key", na);
+                text = ReplaceJsonString(text, "refresh_token", nr);
+                return ReplaceJsonString(text, "expires_at", newExp);
+            });
+            if (err == null) Log.Write("Grok login renewed");
+            else Log.Write("Grok login renewed but NOT saved (" + err + "): run grok once if it asks you to sign in");
             return na;
         }
+    }
+    // Exactly one xAI login must be present; with several we can't know which one grok uses.
+    static bool GrokEntry(Dictionary<string, object> root, out string scope, out Dictionary<string, object> e, out string error)
+    {
+        scope = null; e = null; error = null; int n = 0;
+        foreach (var kv in root)
+            if (kv.Key.StartsWith("https://auth.x.ai::") && kv.Value is Dictionary<string, object>)
+            { n++; scope = kv.Key; e = (Dictionary<string, object>)kv.Value; }
+        if (n == 1) return true;
+        if (n > 1) error = "Several Grok accounts in auth.json: can't tell which one is active";
+        scope = null; e = null;
+        return false;
+    }
+
+    // ---------- careful write-back of a renewed login ----------
+    static bool CanWrite(string path)
+    {
+        try { using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read)) return true; }
+        catch { return false; }
+    }
+    // Re-reads the file; gives up if its refresh token is no longer the one we just used (the official tool
+    // renewed it meanwhile - its copy wins). Otherwise patches the text and swaps it in via a protected temp file.
+    // Only the flat JSON object that follows `anchor` (e.g. "claudeAiOauth") is touched; everything else stays byte-for-byte.
+    static string PatchFile(string path, string usedRefresh, string anchor, Func<string, string> patch)
+    {
+        for (int attempt = 0; attempt < 8; attempt++)
+        {
+            if (attempt > 0) Thread.Sleep(200);
+            string text;
+            try { text = File.ReadAllText(path, new UTF8Encoding(false)); } catch { continue; }
+            int a = text.IndexOf(anchor, StringComparison.Ordinal);
+            int open = a < 0 ? -1 : text.IndexOf('{', a);
+            int close = open < 0 ? -1 : text.IndexOf('}', open);
+            if (close < 0) return "unexpected file layout";
+            string seg = text.Substring(open, close - open + 1);
+            if (seg.IndexOf("\"" + usedRefresh + "\"", StringComparison.Ordinal) < 0) return "the official tool already saved a newer login";
+            string patched = patch(seg);
+            if (patched == null || patched == seg) return "unexpected file layout";
+            string updated = text.Substring(0, open) + patched + text.Substring(close + 1);
+            string tmp = path + ".ug" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".tmp";
+            try
+            {
+                using (var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    try { File.SetAccessControl(tmp, File.GetAccessControl(path)); } catch { }   // same protection as the login file
+                    byte[] b = new UTF8Encoding(false).GetBytes(updated);
+                    fs.Write(b, 0, b.Length);
+                }
+                File.Replace(tmp, path, null);
+                return null;
+            }
+            catch { }
+            finally { try { if (File.Exists(tmp)) File.Delete(tmp); } catch { } }
+        }
+        return "file stayed locked";
+    }
+    static string ReplaceJsonString(string text, string key, string value)
+    {
+        if (text == null) return null;
+        var re = new Regex("(\"" + Regex.Escape(key) + "\"\\s*:\\s*\")((?:[^\"\\\\]|\\\\.)*)(\")");
+        if (!re.IsMatch(text)) return null;
+        string v = value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        return re.Replace(text, m => m.Groups[1].Value + v + m.Groups[3].Value, 1);
+    }
+    static string ReplaceJsonNumber(string text, string key, long value)
+    {
+        if (text == null) return null;
+        var re = new Regex("(\"" + Regex.Escape(key) + "\"\\s*:\\s*)(-?\\d+(?:\\.\\d+)?)");
+        if (!re.IsMatch(text)) return null;
+        return re.Replace(text, m => m.Groups[1].Value + value.ToString(CultureInfo.InvariantCulture), 1);
+    }
+    static DateTime? EpochMs(double ms)
+    {
+        if (double.IsNaN(ms) || ms <= 0 || ms > 4102444800000.0) return null;   // missing or beyond year 2100
+        return Epoch.AddMilliseconds(ms);
     }
 
     // ---------- Antigravity CLI location ----------
@@ -376,7 +506,8 @@ static class Usage
     // ---------- helpers ----------
     static Quota Ok(double remaining)
     {
-        if (double.IsNaN(remaining) || remaining < -0.5 || remaining > 100.5) return Fail("Invalid value");
+        // over-quota (used > 100%) shows as 0% left; only absurd values are rejected
+        if (double.IsNaN(remaining) || double.IsInfinity(remaining) || remaining < -1000 || remaining > 100.5) return Fail("Invalid value");
         return new Quota { Ok = true, Remaining = Math.Max(0, Math.Min(100, remaining)) };
     }
     static Quota Fail(string msg) { return new Quota { Error = msg }; }
@@ -396,6 +527,7 @@ static class Usage
             var req = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(url);
             req.Method = method; req.Timeout = TIMEOUT_MS; req.ReadWriteTimeout = TIMEOUT_MS;
             req.Accept = "application/json"; req.UserAgent = "UsageGauge";
+            req.ServicePoint.Expect100Continue = false;   // some proxies stall on Expect: 100-continue
             req.AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate;
             if (headers != null) foreach (var kv in headers) req.Headers[kv.Key] = kv.Value;
             if (body != null)
@@ -451,18 +583,6 @@ static class Usage
         }
         return d != null;
     }
-    // Write a sibling temp file, then swap it in, so a reader never sees a half-written login file.
-    static bool WriteJsonAtomic(string path, Dictionary<string, object> d)
-    {
-        string tmp = path + ".ug.tmp";
-        try
-        {
-            File.WriteAllText(tmp, new JavaScriptSerializer { MaxJsonLength = 1024 * 1024 }.Serialize(d), new UTF8Encoding(false));
-            File.Replace(tmp, path, null);
-            return true;
-        }
-        catch { try { File.Delete(tmp); } catch { } return false; }
-    }
     static bool TryDict(Dictionary<string, object> d, string key, out Dictionary<string, object> v)
     {
         object o; v = d != null && d.TryGetValue(key, out o) ? o as Dictionary<string, object> : null; return v != null;
@@ -479,15 +599,20 @@ static class Usage
     }
     public static DateTime? ParseTime(object v)
     {
-        DateTime dt;
-        if (v is int || v is long || v is double || v is decimal)
+        try
         {
-            double n = Convert.ToDouble(v, CultureInfo.InvariantCulture);
-            var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-            return n > 1e11 ? epoch.AddMilliseconds(n) : epoch.AddSeconds(n);
+            DateTime dt;
+            if (v is int || v is long || v is double || v is decimal)
+            {
+                double n = Convert.ToDouble(v, CultureInfo.InvariantCulture);
+                if (n > 1e11) n /= 1000;                                       // milliseconds -> seconds
+                if (double.IsNaN(n) || n <= 0 || n > 4102444800) return null;   // missing or beyond year 2100
+                return Epoch.AddSeconds(n);
+            }
+            if (DateTime.TryParse(Convert.ToString(v, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture,
+                    DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out dt)) return dt;
         }
-        if (DateTime.TryParse(Convert.ToString(v, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture,
-                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out dt)) return dt;
+        catch { }
         return null;
     }
 }
@@ -512,8 +637,7 @@ class GaugeForm : Form
     static int[] Vis = { 0, 1, 2, 3, 4 };           // indexes of the gauges currently shown
     static void Relayout(int count)
     {
-        count = Math.Max(1, count);
-        W = PADX + count * BLOCK + (count - 1) * SEP + PADX - 2;
+        W = count <= 0 ? 200 : PADX + count * BLOCK + (count - 1) * SEP + PADX - 2;   // 0 = "nothing to show" hint
         WW = W + SH * 2; HH = H + SH * 2;
         PW = (int)Math.Ceiling(WW * S); PH = (int)Math.Ceiling(HH * S);
     }
@@ -534,9 +658,9 @@ class GaugeForm : Form
     {
         var v = new List<int>();
         for (int i = 0; i < N; i++) if (!Hidden.Contains(Ids[i]) && Available(i)) v.Add(i);
-        if (v.Count == 0) { v.Add(0); v.Add(1); }   // nothing set up: show Codex/Claude so the tooltip explains why
         return v.ToArray();
     }
+    static int[] running = new int[3];   // per-service "worker still in flight" flags
     static bool Shown_(string id) { int i = Array.IndexOf(Ids, id); return Array.IndexOf(Vis, i) >= 0; }
     // Re-check which gauges to show; resize the window when that changes.
     void UpdateVisible()
@@ -1003,7 +1127,8 @@ class GaugeForm : Form
         Bitmap small = null;
         try
         {
-            int pw = (int)Math.Round(W * S), ph = (int)Math.Round(H * S), off = (int)Math.Round(SH * S);
+            // same rounding as the window itself (PW/PH), so the sample lines up at 125%/175%
+            int off = (PW - (int)Math.Round(W * S)) / 2, pw = PW - 2 * off, ph = PH - 2 * off;
             using (var raw = new Bitmap(pw, ph, PixelFormat.Format32bppArgb))
             {
                 using (var g = Graphics.FromImage(raw)) g.CopyFromScreen(Left + off, Top + off, 0, 0, new Size(pw, ph));
@@ -1022,7 +1147,8 @@ class GaugeForm : Form
             for (int yy = 0; yy < small.Height; yy++)
                 for (int xx = 0; xx < small.Width; xx++)
                 { var px = small.GetPixel(xx, yy); lum += (0.2126 * px.R + 0.7152 * px.G + 0.0722 * px.B) / 255.0; nPix++; }
-            if (nPix > 0) lightBg = lum / nPix > 0.55;
+            // hysteresis: a background near the threshold must not flip the colors back and forth
+            if (nPix > 0) { double avg = lum / nPix; if (avg > 0.62) lightBg = true; else if (avg < 0.48) lightBg = false; }
             string forced = Environment.GetEnvironmentVariable("USAGEGAUGE_THEME");   // testing aid: light | dark
             if (forced == "light") lightBg = true; else if (forced == "dark") lightBg = false;
             var old = backdrop; backdrop = small; small = null;
@@ -1046,6 +1172,7 @@ class GaugeForm : Form
         bool force = Interlocked.Exchange(ref forceAgPending, 0) == 1;
         int gen = Interlocked.Increment(ref generation);
         double nowMs = Clock.Elapsed.TotalMilliseconds;
+        UpdateVisible();   // pick up a service that was just set up, before deciding what to poll
         bool agShown = Shown_("ag-gemini") || Shown_("ag-3p");
         bool includeAg = agShown && (force || nowMs - lastAgMs >= AG_EVERY_MS);
         bool[] want = { Shown_("codex"), Shown_("claude"), Shown_("grok") };
@@ -1161,12 +1288,16 @@ class GaugeForm : Form
         foreach (var j in jobs)
         {
             var job = j;
+            int slot = Array.IndexOf(MainIds, job.Key);
+            // a previous worker for this service is still stuck: don't pile another one on top
+            if (Interlocked.CompareExchange(ref running[slot], 1, 0) != 0) { lock (results) results[job.Key] = Err(NameOf(job.Key), "Timed out (previous request still running)"); continue; }
             var t = new Thread(() =>
             {
                 Quota q;
                 try { q = job.Value(); } catch (Exception ex) { q = Err(NameOf(job.Key), Sanitize(ex.Message)); }
+                finally { Interlocked.Exchange(ref running[slot], 0); }
                 q.Name = NameOf(job.Key);
-                lock (results) results[job.Key] = q;
+                lock (results) if (!results.ContainsKey(job.Key)) results[job.Key] = q;
             });
             t.IsBackground = true; t.Start();
             threads.Add(new KeyValuePair<string, Thread>(job.Key, t));
@@ -1174,13 +1305,19 @@ class GaugeForm : Form
         Thread agThread = null;
         if (includeAg)
         {
-            agThread = new Thread(() => { var r = Antigravity(); Thread.MemoryBarrier(); agOut = r; });
+            agThread = new Thread(() =>
+            {
+                Quota[] r;
+                try { r = Antigravity(); }
+                catch (Exception ex) { string m = "agy: " + Sanitize(ex.Message); r = new[] { Err(NameOf("ag-gemini"), m), Err(NameOf("ag-3p"), m) }; }
+                Thread.MemoryBarrier(); agOut = r;
+            });
             agThread.IsBackground = true; agThread.Start();
         }
         var sw = Stopwatch.StartNew();
         foreach (var t in threads)
         {
-            int left = Math.Max(0, HTTP_TIMEOUT_MS * 2 + 3000 - (int)sw.ElapsedMilliseconds);   // request + one refresh
+            int left = Math.Max(0, HTTP_TIMEOUT_MS * 3 + 5000 - (int)sw.ElapsedMilliseconds);   // usage + renew + usage, plus re-check pause
             if (!t.Value.Join(left)) lock (results) if (!results.ContainsKey(t.Key)) results[t.Key] = Err(NameOf(t.Key), "Timed out");
         }
         lock (results) foreach (var kv in results) res[kv.Key] = kv.Value;
@@ -1241,7 +1378,8 @@ class GaugeForm : Form
         object w, rf, rt;
         if (b.TryGetValue("window", out w) && w != null && w.ToString() != "weekly") return Err(name, "Not a weekly limit");
         if (!b.TryGetValue("remaining_fraction", out rf) || rf == null) return Err(name, "Remaining amount missing");
-        double frac = Convert.ToDouble(rf, CultureInfo.InvariantCulture);
+        double frac;
+        try { frac = Convert.ToDouble(rf, CultureInfo.InvariantCulture); } catch { return Err(name, "Invalid value"); }
         if (double.IsNaN(frac) || frac < -0.005 || frac > 1.005) return Err(name, "Invalid value");
         var q = new Quota { Name = name, Ok = true, Remaining = Math.Max(0, Math.Min(100, frac * 100)) };
         if (b.TryGetValue("reset_time", out rt) && rt != null) q.ResetsAt = Usage.ParseTime(rt);
@@ -1342,7 +1480,7 @@ class GaugeForm : Form
     {
         if (t == null) return "";
         var d = t.Value - DateTime.UtcNow;
-        if (d.TotalSeconds <= 0) return L.T("리셋됨 · 갱신 대기", "reset · updating");
+        if (d.TotalSeconds <= 0) return L.T("갱신 대기", "updating");
         if (d.TotalMinutes < 1) return L.T("곧 리셋", "resets now");
         int days = (int)d.TotalDays, hours = (int)d.TotalHours, mins = (int)d.TotalMinutes;
         if (d.TotalHours < 1) return L.T(mins + "분", mins + "m");
@@ -1378,6 +1516,12 @@ class GaugeForm : Form
             gauges.DropDownItems.Add(it);
         }
         menu.Items.Add(gauges);
+        var renew = new ToolStripMenuItem(L.T("Claude·Grok 로그인 자동 갱신 (실험적)", "Renew Claude/Grok logins (experimental)"))
+            { Checked = Usage.RenewLogins, ToolTipText = L.T(
+                "켜면 로그인이 만료됐을 때 위젯이 대신 갱신해요. 끄면 Claude Code·grok을 쓸 때만 값이 갱신돼요.",
+                "When on, the widget renews an expired login itself. When off, values update only while you use Claude Code / grok.") };
+        renew.Click += delegate { Usage.SetRenew(!Usage.RenewLogins); Refresh_(); };
+        menu.Items.Add(renew);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(L.T("종료", "Quit"), null, delegate { Close(); });
     }
@@ -1512,6 +1656,17 @@ class GaugeForm : Form
     void DrawAll(Graphics g)
     {
         DrawPanel(g);
+        if (Vis.Length == 0)   // nothing to show: a small hint instead of gauges
+        {
+            string msg = L.T("표시할 항목 없음 · 우클릭", "Nothing to show · right-click");
+            using (var p = TextPath(msg, FKor, FontStyle.Regular, SUB_PX, 0))
+            {
+                var b = p.GetBounds();
+                Shift(p, (W - b.Width) / 2f - b.X, H / 2f + SUB_PX * 0.35f);
+                using (var br = new SolidBrush(Ink(200))) g.FillPath(br, p);
+            }
+            return;
+        }
         for (int k = 0; k < Vis.Length; k++)
         {
             int i = Vis[k];
@@ -1541,7 +1696,7 @@ class GaugeForm : Form
                     g.DrawImage(backdrop, new Rectangle(-1, -1, W + 2, H + 2), 0, 0, backdrop.Width, backdrop.Height, GraphicsUnit.Pixel, ia);
                 }
             else
-                using (var fb = new SolidBrush(Color.FromArgb(150, 30, 26, 40))) g.FillPath(fb, path);   // fallback when blur is unavailable
+                using (var fb = new SolidBrush(lightBg ? Color.FromArgb(170, 245, 245, 248) : Color.FromArgb(150, 30, 26, 40))) g.FillPath(fb, path);   // fallback when blur is unavailable
             int a1 = (int)(13 + 16 * hoverT), a2 = (int)(2 + 10 * hoverT);
             using (var bg = new LinearGradientBrush(new RectangleF(0, 0, W, H), Color.FromArgb(a1, 255, 255, 255), Color.FromArgb(a2, 255, 255, 255), 25f))
                 g.FillPath(bg, path);
@@ -1653,8 +1808,12 @@ class GaugeForm : Form
             var b1 = p1.GetBounds(); var b2 = p2.GetBounds();
             Shift(p1, tx - b1.X, base1);
             Shift(p2, tx - b2.X, base2);
+            // keep text inside its own column so a long string can't run into the next gauge
+            var clipState = g.Save();
+            g.SetClip(new RectangleF(tx - 1, 0, TEXT_W + 2, H), CombineMode.Intersect);
             using (var wb = new SolidBrush(lightBg ? Color.FromArgb(245, 22, 22, 28) : Color.FromArgb(250, 255, 255, 255))) g.FillPath(wb, p1);
             using (var sb = new SolidBrush(lightBg ? Color.FromArgb(225, 70, 70, 82) : Color.FromArgb(222, 222, 222, 232))) g.FillPath(sb, p2);
+            g.Restore(clipState);
         }
     }
 
@@ -1701,6 +1860,8 @@ static class Program
         try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
         Application.EnableVisualStyles();
         L.Load();
+        Usage.LoadSettings();
+        Usage.CleanupTemps();
 
         Application.Run(new GaugeForm());
         GC.KeepAlive(m);
