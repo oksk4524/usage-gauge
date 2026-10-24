@@ -326,16 +326,30 @@ static class Usage
             { "client_id", "9d1c250a-e61b-44d9-88ed-5944d1962f5e" } };
         if (cur.Extra != null) body["scope"] = cur.Extra;
         var n = PostToken("https://platform.claude.com/v1/oauth/token", new JavaScriptSerializer().Serialize(body), "application/json", cur, 8 * 3600);
-        patch = n == null ? null : (Func<string, string>)(t => ReplaceJsonNumber(ReplaceJsonString(ReplaceJsonString(t,
-            "accessToken", n.Access), "refreshToken", n.Refresh), "expiresAt", (long)(n.Exp.Value - Epoch).TotalMilliseconds));
+        patch = null;
+        if (n == null) return null;
+        long expMs = (long)(n.Exp.Value - Epoch).TotalMilliseconds;
+        patch = t =>
+        {
+            t = ReplaceJsonString(t, "accessToken", n.Access);
+            t = ReplaceJsonString(t, "refreshToken", n.Refresh);
+            return ReplaceJsonNumber(t, "expiresAt", expMs);
+        };
         return n;
     }
     static Login RenewGrok(Login cur, out Func<string, string> patch)
     {
         string form = "grant_type=refresh_token&client_id=" + Uri.EscapeDataString(cur.Extra) + "&refresh_token=" + Uri.EscapeDataString(cur.Refresh);
         var n = PostToken("https://auth.x.ai/oauth2/token", form, "application/x-www-form-urlencoded", cur, 3600);
-        patch = n == null ? null : (Func<string, string>)(t => ReplaceJsonString(ReplaceJsonString(ReplaceJsonString(t,
-            "key", n.Access), "refresh_token", n.Refresh), "expires_at", n.Exp.Value.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture)));
+        patch = null;
+        if (n == null) return null;
+        string exp = n.Exp.Value.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture);
+        patch = t =>
+        {
+            t = ReplaceJsonString(t, "key", n.Access);
+            t = ReplaceJsonString(t, "refresh_token", n.Refresh);
+            return ReplaceJsonString(t, "expires_at", exp);
+        };
         return n;
     }
     static Login PostToken(string url, string body, string type, Login cur, double defaultTtl)

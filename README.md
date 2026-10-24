@@ -45,10 +45,10 @@ Remaining risk: if Claude Code or grok renews at the very same moment, it may as
 
 ## Known limitations
 
-- Codex logins kept in the OS keyring (`cli_auth_credentials_store = "keyring"`/`"auto"`) aren't read.
+- Codex logins kept in the OS keyring (`cli_auth_credentials_store = "keyring"`/`"auto"`) aren't read; nor is a Claude Code login kept anywhere but `~/.claude/.credentials.json`.
 - Several Grok accounts in `auth.json`: the Grok gauge stays off (can't tell which is active).
 - `agy` installed but not signed in: the Antigravity gauges show an error.
-- After changing display scaling, restart the widget.
+- Scaling is read at start-up: after changing it, or moving the widget to a monitor with different scaling, restart the widget.
 - Some antivirus tools flag unsigned programs that read login files and use the network. The whole source is
   `UsageGauge.cs`; `install.ps1` builds it on your PC.
 - Unofficial; use at your own risk. Test overrides: `USAGEGAUGE_SCALE` (e.g. `1.5`), `USAGEGAUGE_THEME` (`light`/`dark`).
