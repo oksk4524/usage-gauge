@@ -3,7 +3,7 @@ Third-party notices
 
 UsageGauge includes the following third-party material.
 
-assets/codex.png, assets/claude.path
+assets/codex.png, assets/claude.png (rendered from its SVG)
   Icons taken from Win-CodexBar (https://github.com/nesszer/Win-CodexBar),
   a Windows port of CodexBar (https://github.com/steipete/CodexBar).
   Usage endpoints and token-refresh parameters were also learned from these projects.

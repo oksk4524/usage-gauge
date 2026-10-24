@@ -1,8 +1,5 @@
-# Builds UsageGauge with the C# compiler that ships with Windows (.NET Framework 4)
-# and installs it to %LOCALAPPDATA%\UsageGauge.
-#   -Autostart   also start it at sign-in
-#   -Uninstall   stop it, remove autostart and delete %LOCALAPPDATA%\UsageGauge
-# Run with:  powershell -ExecutionPolicy Bypass -File .\install.ps1 -Autostart
+# Builds UsageGauge with Windows' own C# compiler and installs it to %LOCALAPPDATA%\UsageGauge.
+# powershell -ExecutionPolicy Bypass -File .\install.ps1 [-Autostart | -Uninstall]
 param([switch]$Autostart, [switch]$Uninstall)
 $ErrorActionPreference = 'Stop'
 
