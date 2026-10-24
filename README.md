@@ -9,6 +9,7 @@ Codex, Claude, Grok and Antigravity (Gemini, and Claude/GPT inside Antigravity).
 - Hides instantly over fullscreen apps, stays above the taskbar.
 - About 30 MB RAM and well under 1% of one CPU core. One ~60 KB executable, no runtime to install.
 - No third-party helper: it reads usage straight from each service with the login the official tool already saved on your PC.
+- English or Korean, following the Windows display language (any other language falls back to English). Override it from the right-click menu.
 
 ## Where the numbers come from
 
@@ -24,7 +25,7 @@ starts the `agy` CLI. Polling pauses while the PC is unattended and resumes when
 
 These are the same internal endpoints the official tools use. They are not public APIs and can change.
 When something breaks, the gauge keeps the last good number and shows an amber dot, and the reason
-is written to `%LOCALAPPDATA%\UsageGauge\error.log`.
+is written (in English) to `%LOCALAPPDATA%\UsageGauge\error.log` - paste it into an issue as is.
 
 ### Token refresh
 
@@ -44,8 +45,21 @@ cd usage-gauge
 .\install.ps1 -Autostart
 ```
 
-Drag the widget to move it (the position is remembered). Right-click for refresh / quit.
+Drag the widget to move it (the position is remembered). Right-click for refresh, language and quit.
 Hover for exact reset times.
+
+## 한국어
+
+작업표시줄에 Codex, Claude, Grok, Antigravity(Gemini, Claude·GPT)의 **주간** 남은 사용량을 링 게이지로 띄워주는 작은 위젯이에요.
+
+![widget-ko](docs/widget-ko.png)
+
+- 각 서비스 공식 도구가 이 PC에 저장해 둔 로그인으로 사용량을 직접 읽어요. 다른 프로그램이 필요 없어요.
+- 전체 화면 앱 위에서는 바로 숨고, 메모리 약 30MB, CPU는 1% 미만이에요.
+- Windows 표시 언어가 한국어면 한국어로, 그 외에는 영어로 나와요. 우클릭 메뉴에서 바꿀 수 있어요.
+- 주황 점: 값이 오래됐거나 갱신이 계속 실패하는 중이라는 뜻이에요. 원인은 `%LOCALAPPDATA%\UsageGauge\error.log`에 남아요.
+
+설치: 저장소를 받은 뒤 PowerShell에서 `.\install.ps1 -Autostart`
 
 ## Credits
 

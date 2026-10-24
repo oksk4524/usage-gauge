@@ -119,7 +119,7 @@ static class Log
         {
             // collapse identical repeats within 10 min so a stuck condition can't flood the log, but count them
             if (msg == lastMsg && (DateTime.UtcNow - lastAt).TotalMinutes < 10) { repeats++; return; }
-            string prefix = repeats > 0 ? DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  (직전 메시지 " + repeats + "회 더 반복됨)" + Environment.NewLine : "";
+            string prefix = repeats > 0 ? DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  (previous message repeated " + repeats + " more times)" + Environment.NewLine : "";
             repeats = 0;
             lastMsg = msg; lastAt = DateTime.UtcNow;
             Directory.CreateDirectory(Dir);
@@ -133,6 +133,34 @@ static class Log
         }
         catch { }
     }
+}
+
+// UI language: follows the Windows display language (Korean or English; anything else -> English).
+// Can be forced from the right-click menu; the choice is kept in lang.txt (auto | ko | en).
+static class L
+{
+    static readonly string File_ = Path.Combine(Log.Dir, "lang.txt");
+    public static string Mode = "auto";
+    public static bool Ko;
+    public static CultureInfo Culture = CultureInfo.InvariantCulture;
+    public static void Load()
+    {
+        try { if (File.Exists(File_)) Mode = File.ReadAllText(File_).Trim().ToLowerInvariant(); } catch { }
+        if (Mode != "ko" && Mode != "en") Mode = "auto";
+        Apply();
+    }
+    public static void Set(string mode)
+    {
+        Mode = mode;
+        try { Directory.CreateDirectory(Log.Dir); File.WriteAllText(File_, mode); } catch { }
+        Apply();
+    }
+    static void Apply()
+    {
+        Ko = Mode == "ko" || (Mode == "auto" && CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ko");
+        try { Culture = Ko ? new CultureInfo("ko-KR") : new CultureInfo("en-US"); } catch { Culture = CultureInfo.InvariantCulture; }
+    }
+    public static string T(string ko, string en) { return Ko ? ko : en; }
 }
 
 // Reads weekly quota straight from each service, using the login the official tool already saved on this PC.
@@ -149,16 +177,16 @@ static class Usage
     {
         string path = Path.Combine(Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(Home, ".codex"), "auth.json");
         Dictionary<string, object> auth, tokens;
-        if (!TryReadJson(path, out auth) || !TryDict(auth, "tokens", out tokens)) return Fail("Codex 로그인 정보 없음");
+        if (!TryReadJson(path, out auth) || !TryDict(auth, "tokens", out tokens)) return Fail("Codex login not found");
         string access = Str(tokens, "access_token"), account = Str(tokens, "account_id");
-        if (access == null) return Fail("Codex 로그인 정보 없음");
+        if (access == null) return Fail("Codex login not found");
         var h = new Dictionary<string, string> { { "Authorization", "Bearer " + access } };
         if (account != null) h["ChatGPT-Account-Id"] = account;
         int status; string body = Http("GET", "https://chatgpt.com/backend-api/wham/usage", h, null, null, out status);
-        if (status == 401 || status == 403) return Fail("Codex 로그인 만료: Codex를 한 번 실행하면 갱신됨");
+        if (status == 401 || status == 403) return Fail("Codex login expired: run Codex once to renew it");
         if (status != 200) return Fail(HttpError(status));
         var j = Parse(body); Dictionary<string, object> rl;
-        if (j == null || !TryDict(j, "rate_limit", out rl)) return Fail("Codex 응답 형식이 바뀜");
+        if (j == null || !TryDict(j, "rate_limit", out rl)) return Fail("Codex response format changed");
         foreach (var key in new[] { "primary_window", "secondary_window" })
         {
             Dictionary<string, object> w;
@@ -171,7 +199,7 @@ static class Usage
             if (!double.IsNaN(resetAt)) q.ResetsAt = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(resetAt);
             return q;
         }
-        return Fail("Codex 주간 한도 없음");
+        return Fail("Codex weekly limit not found");
     }
 
     // ---------- Claude (Claude Code login) ----------
@@ -179,20 +207,20 @@ static class Usage
     {
         string path = Path.Combine(Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") ?? Path.Combine(Home, ".claude"), ".credentials.json");
         string access = ClaudeToken(path, false);
-        if (access == null) return Fail("Claude 로그인 정보 없음");
+        if (access == null) return Fail("Claude login not found");
         int status; string body = ClaudeGet(access, out status);
         if (status == 401)
         {
             access = ClaudeToken(path, true);
-            if (access == null) return Fail("Claude 로그인 만료: Claude Code를 한 번 실행하면 갱신됨");
+            if (access == null) return Fail("Claude login expired: run Claude Code once to renew it");
             body = ClaudeGet(access, out status);
         }
-        if (status == 401 || status == 403) return Fail("Claude 로그인 만료: Claude Code를 한 번 실행하면 갱신됨");
+        if (status == 401 || status == 403) return Fail("Claude login expired: run Claude Code once to renew it");
         if (status != 200) return Fail(HttpError(status));
         var j = Parse(body); Dictionary<string, object> w;
-        if (j == null || !TryDict(j, "seven_day", out w)) return Fail("Claude 응답 형식이 바뀜");
+        if (j == null || !TryDict(j, "seven_day", out w)) return Fail("Claude response format changed");
         double used = Num(w, "utilization");
-        if (double.IsNaN(used)) return Fail("Claude 주간 한도 없음");
+        if (double.IsNaN(used)) return Fail("Claude weekly limit not found");
         var q = Ok(100 - used);
         object ra; if (w.TryGetValue("resets_at", out ra) && ra != null) q.ResetsAt = ParseTime(ra);
         return q;
@@ -225,7 +253,7 @@ static class Usage
                 new JavaScriptSerializer().Serialize(body), "application/json", out status);
             var j = status == 200 ? Parse(resp) : null;
             string na = j != null ? Str(j, "access_token") : null;
-            if (na == null) { Log.Write("Claude 로그인 갱신 실패 (" + status + ")"); return null; }
+            if (na == null) { Log.Write("Claude login refresh failed (" + status + ")"); return null; }
             // write back exactly like Claude Code (other fields untouched), atomically
             Dictionary<string, object> latest, lo;
             if (TryReadJson(path, out latest) && TryDict(latest, "claudeAiOauth", out lo)) { root = latest; o = lo; }
@@ -233,8 +261,8 @@ static class Usage
             string nr = Str(j, "refresh_token"); if (nr != null) o["refreshToken"] = nr;
             double ttl = Num(j, "expires_in"); if (double.IsNaN(ttl)) ttl = 8 * 3600;
             o["expiresAt"] = (long)(DateTime.UtcNow.AddSeconds(ttl) - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
-            if (!WriteJsonAtomic(path, root)) Log.Write("Claude 로그인 저장 실패");
-            else Log.Write("Claude 로그인 갱신함");
+            if (!WriteJsonAtomic(path, root)) Log.Write("Claude login save failed");
+            else Log.Write("Claude login refreshed");
             return na;
         }
     }
@@ -244,23 +272,23 @@ static class Usage
     {
         string path = Path.Combine(Environment.GetEnvironmentVariable("GROK_HOME") ?? Path.Combine(Home, ".grok"), "auth.json");
         string access = GrokToken(path, false);
-        if (access == null) return Fail("Grok 로그인 정보 없음");
+        if (access == null) return Fail("Grok login not found");
         int status; string body = GrokGet(access, out status);
         if (status == 401)
         {
             access = GrokToken(path, true);
-            if (access == null) return Fail("Grok 로그인 만료: grok을 한 번 실행하면 갱신됨");
+            if (access == null) return Fail("Grok login expired: run grok once to renew it");
             body = GrokGet(access, out status);
         }
-        if (status == 401 || status == 403) return Fail("Grok 로그인 만료: grok을 한 번 실행하면 갱신됨");
+        if (status == 401 || status == 403) return Fail("Grok login expired: run grok once to renew it");
         if (status != 200) return Fail(HttpError(status));
         var j = Parse(body); Dictionary<string, object> c;
-        if (j == null || !TryDict(j, "config", out c)) return Fail("Grok 응답 형식이 바뀜");
+        if (j == null || !TryDict(j, "config", out c)) return Fail("Grok response format changed");
         Dictionary<string, object> period;
         if (TryDict(c, "currentPeriod", out period))
         {
             string type = Str(period, "type");
-            if (type != null && type != "USAGE_PERIOD_TYPE_WEEKLY") return Fail("Grok 주간 한도가 아님");
+            if (type != null && type != "USAGE_PERIOD_TYPE_WEEKLY") return Fail("Grok period is not weekly");
         }
         double used = Num(c, "creditUsagePercent");
         if (double.IsNaN(used)) used = 0;                                     // field is omitted when nothing is used yet
@@ -293,15 +321,15 @@ static class Usage
             int status; string resp = Http("POST", "https://auth.x.ai/oauth2/token", null, form, "application/x-www-form-urlencoded", out status);
             var j = status == 200 ? Parse(resp) : null;
             string na = j != null ? Str(j, "access_token") : null;
-            if (na == null) { Log.Write("Grok 로그인 갱신 실패 (" + status + ")"); return null; }
+            if (na == null) { Log.Write("Grok login refresh failed (" + status + ")"); return null; }
             Dictionary<string, object> latest;
             if (TryReadJson(path, out latest) && latest.ContainsKey(scope) && latest[scope] is Dictionary<string, object>) { root = latest; e = (Dictionary<string, object>)latest[scope]; }
             e["key"] = na;
             string nr = Str(j, "refresh_token"); if (nr != null) e["refresh_token"] = nr;
             double ttl = Num(j, "expires_in"); if (double.IsNaN(ttl)) ttl = 3600;
             e["expires_at"] = DateTime.UtcNow.AddSeconds(ttl).ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture);
-            if (!WriteJsonAtomic(path, root)) Log.Write("Grok 로그인 저장 실패");
-            else Log.Write("Grok 로그인 갱신함");
+            if (!WriteJsonAtomic(path, root)) Log.Write("Grok login save failed");
+            else Log.Write("Grok login refreshed");
             return na;
         }
     }
@@ -331,16 +359,16 @@ static class Usage
     // ---------- helpers ----------
     static Quota Ok(double remaining)
     {
-        if (double.IsNaN(remaining) || remaining < -0.5 || remaining > 100.5) return Fail("잘못된 값");
+        if (double.IsNaN(remaining) || remaining < -0.5 || remaining > 100.5) return Fail("Invalid value");
         return new Quota { Ok = true, Remaining = Math.Max(0, Math.Min(100, remaining)) };
     }
     static Quota Fail(string msg) { return new Quota { Error = msg }; }
     static string HttpError(int status)
     {
-        if (status <= 0) return "응답 시간 초과 (네트워크)";
-        if (status == 429) return "요청 한도 초과 (429), 잠시 후 재시도";
-        if (status >= 500) return "조회 오류: 서버 " + status;
-        return "조회 실패 (HTTP " + status + ")";
+        if (status <= 0) return "Timed out (network)";
+        if (status == 429) return "Rate limited (429), will retry";
+        if (status >= 500) return "Lookup error: server " + status;
+        return "Request failed (HTTP " + status + ")";
     }
     // status: HTTP code, or 0 on network error / timeout
     static string Http(string method, string url, Dictionary<string, string> headers, string body, string contentType, out int status)
@@ -482,7 +510,6 @@ class GaugeForm : Form
     const float NUM_PX = 17f, PCT_PX = 11f, SUB_PX = 11.5f, LINE_GAP = 5f;
     static readonly StringFormat Typo = MakeTypo();
     static readonly Font NumFont = new Font(FNum, NUM_PX, FontStyle.Bold, GraphicsUnit.Pixel);
-    static readonly CultureInfo Ko = new CultureInfo("ko-KR");
 
     readonly Quota[] qs = { new Quota { Name = Names[0] }, new Quota { Name = Names[1] }, new Quota { Name = Names[2] }, new Quota { Name = Names[3] }, new Quota { Name = Names[4] } };
     readonly double[] shown = new double[N], from = new double[N];
@@ -538,8 +565,8 @@ class GaugeForm : Form
         grokLogo = LoadPng("grok.png"); geminiLogo = LoadPng("gemini.png"); agLogo = LoadPng("antigravity.png");
 
         var menu = new ContextMenuStrip();
-        menu.Items.Add("새로고침", null, delegate { Refresh_(true); });
-        menu.Items.Add("종료", null, delegate { Close(); });
+        menu.Opening += delegate { BuildMenu(menu); };
+        BuildMenu(menu);
         ContextMenuStrip = menu;
 
         MouseDown += OnDown;
@@ -961,8 +988,8 @@ class GaugeForm : Form
                         if (got == null)   // FetchAll itself blew up: still go through the failure path
                         {
                             got = new Dictionary<string, Quota>();
-                            for (int i = 0; i < 3; i++) got[Ids[i]] = Err(Names[i], "조회 오류");
-                            if (includeAg) for (int i = 3; i < N; i++) got[Ids[i]] = Err(Names[i], "조회 오류");
+                            for (int i = 0; i < 3; i++) got[Ids[i]] = Err(Names[i], "Lookup error");
+                            if (includeAg) for (int i = 3; i < N; i++) got[Ids[i]] = Err(Names[i], "Lookup error");
                         }
                         if (gen == generation) Apply(got);
                     }
@@ -1023,7 +1050,7 @@ class GaugeForm : Form
     static bool IsTransient(string err)
     {
         if (string.IsNullOrEmpty(err)) return true;
-        return err.StartsWith("응답 시간 초과") || err.StartsWith("빈 출력") || err.StartsWith("빈 응답") || err.StartsWith("조회 오류") || err.StartsWith("요청 한도 초과")
+        return err.StartsWith("Timed out") || err.StartsWith("Empty output") || err.StartsWith("Empty response") || err.StartsWith("Lookup error") || err.StartsWith("Rate limited")
             || err.IndexOf("timed out", StringComparison.OrdinalIgnoreCase) >= 0
             || err.IndexOf("connect", StringComparison.OrdinalIgnoreCase) >= 0
             || err.IndexOf("network", StringComparison.OrdinalIgnoreCase) >= 0
@@ -1076,18 +1103,18 @@ class GaugeForm : Form
         foreach (var t in threads)
         {
             int left = Math.Max(0, HTTP_TIMEOUT_MS * 2 + 3000 - (int)sw.ElapsedMilliseconds);   // request + one refresh
-            if (!t.Value.Join(left)) lock (results) if (!results.ContainsKey(t.Key)) results[t.Key] = Err(NameOf(t.Key), "응답 시간 초과");
+            if (!t.Value.Join(left)) lock (results) if (!results.ContainsKey(t.Key)) results[t.Key] = Err(NameOf(t.Key), "Timed out");
         }
         lock (results) foreach (var kv in results) res[kv.Key] = kv.Value;
-        foreach (var id in MainIds) if (!res.ContainsKey(id)) res[id] = Err(NameOf(id), "응답 시간 초과");
+        foreach (var id in MainIds) if (!res.ContainsKey(id)) res[id] = Err(NameOf(id), "Timed out");
 
         if (agThread != null)
         {
             bool joined = agThread.Join(CLI_TIMEOUT_MS + 5000);
             Thread.MemoryBarrier();
             Quota[] ag = joined ? agOut : null;
-            res["ag-gemini"] = ag != null ? ag[0] : Err(NameOf("ag-gemini"), "응답 시간 초과");
-            res["ag-3p"] = ag != null ? ag[1] : Err(NameOf("ag-3p"), "응답 시간 초과");
+            res["ag-gemini"] = ag != null ? ag[0] : Err(NameOf("ag-gemini"), "Timed out");
+            res["ag-3p"] = ag != null ? ag[1] : Err(NameOf("ag-3p"), "Timed out");
         }
         return res;
     }
@@ -1097,7 +1124,7 @@ class GaugeForm : Form
     {
         string gName = NameOf("ag-gemini"), pName = NameOf("ag-3p");
         string agy = Usage.FindAgy();
-        if (agy == null) return new[] { Err(gName, "agy 없음"), Err(pName, "agy 없음") };
+        if (agy == null) return new[] { Err(gName, "agy not found"), Err(pName, "agy not found") };
         string work = Path.Combine(Path.GetTempPath(), "UsageGauge-agy");
         try { Directory.CreateDirectory(work); } catch { }
         object parsed;
@@ -1119,7 +1146,7 @@ class GaugeForm : Form
                 }
             }
         }
-        catch { string m = "agy 응답 형식이 바뀜"; return new[] { Err(gName, m), Err(pName, m) }; }
+        catch { string m = "agy response format changed"; return new[] { Err(gName, m), Err(pName, m) }; }
 
         // Gemini: the general weekly pool and the Gemini 4 Argon weekly pool; show the tighter one.
         Quota gen = Bucket(buckets, "gemini-weekly", gName), argon = null;
@@ -1132,12 +1159,12 @@ class GaugeForm : Form
     static Quota Bucket(Dictionary<string, Dictionary<string, object>> buckets, string id, string name)
     {
         Dictionary<string, object> b;
-        if (!buckets.TryGetValue(id, out b)) return Err(name, "해당 한도 없음");
+        if (!buckets.TryGetValue(id, out b)) return Err(name, "Limit not found");
         object w, rf, rt;
-        if (b.TryGetValue("window", out w) && w != null && w.ToString() != "weekly") return Err(name, "주간 한도가 아님");
-        if (!b.TryGetValue("remaining_fraction", out rf) || rf == null) return Err(name, "남은 양 없음");
+        if (b.TryGetValue("window", out w) && w != null && w.ToString() != "weekly") return Err(name, "Not a weekly limit");
+        if (!b.TryGetValue("remaining_fraction", out rf) || rf == null) return Err(name, "Remaining amount missing");
         double frac = Convert.ToDouble(rf, CultureInfo.InvariantCulture);
-        if (double.IsNaN(frac) || frac < -0.005 || frac > 1.005) return Err(name, "잘못된 값");
+        if (double.IsNaN(frac) || frac < -0.005 || frac > 1.005) return Err(name, "Invalid value");
         var q = new Quota { Name = name, Ok = true, Remaining = Math.Max(0, Math.Min(100, frac * 100)) };
         if (b.TryGetValue("reset_time", out rt) && rt != null) q.ResetsAt = Usage.ParseTime(rt);
         return q;
@@ -1147,7 +1174,7 @@ class GaugeForm : Form
     static string RunCli(string exe, string args, string workDir, out object parsedOut)
     {
         parsedOut = null;
-        if (exe == null || !File.Exists(exe)) return "CLI 없음";
+        if (exe == null || !File.Exists(exe)) return "CLI not found";
         Process p = null; IntPtr job = IntPtr.Zero;
         var outBuf = new StringBuilder(); var errBuf = new StringBuilder();
         var outDone = new ManualResetEvent(false); var errDone = new ManualResetEvent(false);
@@ -1190,9 +1217,9 @@ class GaugeForm : Form
                 outDone.WaitOne(1500); errDone.WaitOne(300);
             }
             string json; lock (outBuf) json = outBuf.ToString();
-            if (!exited) failure = "응답 시간 초과 (" + (int)sw.Elapsed.TotalSeconds + "초, 종료 안 됨)";
-            else if (overflow) failure = "응답이 너무 큼";
-            else if (json.Trim().Length == 0) failure = "빈 출력 (" + (int)sw.Elapsed.TotalSeconds + "초)";
+            if (!exited) failure = "Timed out (" + (int)sw.Elapsed.TotalSeconds + "s, still running)";
+            else if (overflow) failure = "Response too large";
+            else if (json.Trim().Length == 0) failure = "Empty output (" + (int)sw.Elapsed.TotalSeconds + "s)";
 
             if (failure == null)
             {
@@ -1205,7 +1232,7 @@ class GaugeForm : Form
                     try { parsed = new JavaScriptSerializer { MaxJsonLength = MAX_OUT }.DeserializeObject(tl); break; } catch { }
                 }
                 var dict = parsed as Dictionary<string, object>; object eo, st;
-                if (dict == null) failure = "빈 응답 (exit " + p.ExitCode + ")";
+                if (dict == null) failure = "Empty response (exit " + p.ExitCode + ")";
                 else if (dict.TryGetValue("status", out st) && st != null && st.ToString() != "SUCCESS")
                     failure = Sanitize(dict.TryGetValue("error", out eo) && eo != null ? eo.ToString() : st.ToString());
                 else parsedOut = parsed;
@@ -1237,25 +1264,49 @@ class GaugeForm : Form
     {
         if (t == null) return "";
         var d = t.Value - DateTime.UtcNow;
-        if (d.TotalSeconds <= 0) return "리셋됨 · 갱신 대기";
-        if (d.TotalMinutes < 1) return "곧 리셋";
-        if (d.TotalHours < 1) return (int)d.TotalMinutes + "분";
-        if (d.TotalHours < 3) return (int)d.TotalHours + "시간 " + d.Minutes + "분";
-        if (d.TotalDays < 1) return (int)d.TotalHours + "시간";
-        return (int)d.TotalDays + "일 " + d.Hours + "시간";
+        if (d.TotalSeconds <= 0) return L.T("리셋됨 · 갱신 대기", "reset · updating");
+        if (d.TotalMinutes < 1) return L.T("곧 리셋", "resets now");
+        int days = (int)d.TotalDays, hours = (int)d.TotalHours, mins = (int)d.TotalMinutes;
+        if (d.TotalHours < 1) return L.T(mins + "분", mins + "m");
+        if (d.TotalHours < 3) return L.T(hours + "시간 " + d.Minutes + "분", hours + "h " + d.Minutes + "m");
+        if (d.TotalDays < 1) return L.T(hours + "시간", hours + "h");
+        return L.T(days + "일 " + d.Hours + "시간", days + "d " + d.Hours + "h");
     }
+    // Right-click menu, rebuilt each time it opens so it follows the current language.
+    void BuildMenu(ContextMenuStrip menu)
+    {
+        menu.Items.Clear();
+        menu.Items.Add(L.T("새로고침", "Refresh"), null, delegate { Refresh_(true); });
+        var lang = new ToolStripMenuItem(L.T("언어 / Language", "Language / 언어"));
+        foreach (var opt in new[] { new[] { "auto", L.T("자동 (Windows 언어)", "Auto (Windows language)") }, new[] { "ko", "한국어" }, new[] { "en", "English" } })
+        {
+            string mode = opt[0];
+            var it = new ToolStripMenuItem(opt[1]) { Checked = L.Mode == mode };
+            it.Click += delegate { L.Set(mode); UpdateTip(); Render(); };
+            lang.DropDownItems.Add(it);
+        }
+        menu.Items.Add(lang);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(L.T("종료", "Quit"), null, delegate { Close(); });
+    }
+
     void UpdateTip()
     {
         var sbt = new StringBuilder();
         for (int i = 0; i < N; i++) sbt.Append(Line(qs[i])).Append("\n");
-        tip.SetToolTip(this, sbt.ToString() + "\nCodex·Claude·Grok 5분, Antigravity 15분마다 갱신 (자리 비우면 쉬었다가 돌아오면 바로 갱신)\n주황 점: 갱신이 계속 실패해 오래된 값을 보여주는 중\n드래그: 이동 · 우클릭: 새로고침/종료");
+        tip.SetToolTip(this, sbt.ToString() + L.T(
+            "\nCodex·Claude·Grok 5분, Antigravity 15분마다 갱신 (자리 비우면 쉬었다가 돌아오면 바로 갱신)\n주황 점: 값이 오래됐거나 갱신이 계속 실패하는 중\n드래그: 이동 · 우클릭: 새로고침/언어/종료",
+            "\nCodex·Claude·Grok every 5 min, Antigravity every 15 min (paused while you're away)\nAmber dot: the value is out of date or updates keep failing\nDrag: move · Right-click: refresh/language/quit"));
     }
     static string Line(Quota q)
     {
-        if (!q.Ok) return q.Name + " 주간: 읽기 실패 (" + q.Error + ")";
-        string r = q.ResetsAt.HasValue ? " · 리셋 " + q.ResetsAt.Value.ToLocalTime().ToString("M/d (ddd) HH:mm", Ko) : "";
-        string st = q.Failing ? "\n   ⚠ " + q.LastOkUtc.ToLocalTime().ToString("HH:mm") + " 값 표시 중 (최근 갱신 실패: " + q.Error + ")" : " · " + q.LastOkUtc.ToLocalTime().ToString("HH:mm") + " 기준";
-        return q.Name + " 주간 " + Math.Round(q.Remaining) + "% 남음" + r + st;
+        if (!q.Ok) return q.Name + L.T(" 주간: 읽기 실패 (", " weekly: unavailable (") + q.Error + ")";
+        string r = q.ResetsAt.HasValue ? L.T(" · 리셋 ", " · resets ") + q.ResetsAt.Value.ToLocalTime().ToString(L.T("M/d (ddd) HH:mm", "ddd MMM d, HH:mm"), L.Culture) : "";
+        string at = q.LastOkUtc.ToLocalTime().ToString("HH:mm");
+        string st = q.Failing
+            ? L.T("\n   ⚠ " + at + " 값 표시 중 (최근 갱신 실패: ", "\n   ⚠ showing the " + at + " value (last update failed: ") + q.Error + ")"
+            : L.T(" · " + at + " 기준", " · as of " + at);
+        return q.Name + L.T(" 주간 " + Math.Round(q.Remaining) + "% 남음", " weekly " + Math.Round(q.Remaining) + "% left") + r + st;
     }
 
     // ---- animation (timer only runs while something moves) ----
@@ -1472,7 +1523,7 @@ class GaugeForm : Form
 
         float tx = ring.Right + TEXT_GAP;
         string num = loading ? "··" : (q.Ok ? ((int)Math.Round(shown)).ToString() : "!");
-        string sub = loading ? "불러오는 중" : (q.Ok ? ResetShort(q.ResetsAt) : "읽기 실패");
+        string sub = loading ? L.T("불러오는 중", "loading") : (q.Ok ? ResetShort(q.ResetsAt) : L.T("읽기 실패", "unavailable"));
 
         using (var p1 = TextPath(num, FNum, FontStyle.Bold, NUM_PX, 0))
         using (var p2 = TextPath(sub, FKor, FontStyle.Regular, SUB_PX, 0))
@@ -1536,6 +1587,7 @@ static class Program
         try { System.Net.ServicePointManager.SecurityProtocol |= (System.Net.SecurityProtocolType)3072; } catch { }   // TLS 1.2
         try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
         Application.EnableVisualStyles();
+        L.Load();
 
         Application.Run(new GaugeForm());
         GC.KeepAlive(m);
