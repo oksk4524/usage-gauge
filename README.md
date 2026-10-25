@@ -24,7 +24,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Autostart
 No git? **Code > Download ZIP**, unzip, run the last line there. Uninstall: same line with `-Uninstall`.
 
 To share it as one file, `install.ps1 -Package` builds `dist\UsageGauge-Setup.exe`: double-clicking it installs
-(start with Windows included), and it is removed from **Settings > Apps**. It is unsigned, so Windows SmartScreen
+(start with Windows and a Start menu entry included), and it is removed from **Settings > Apps**. It is unsigned, so Windows SmartScreen
 warns on first run (*More info > Run anyway*).
 Drag to move. Right-click for refresh, gauges, language, start with Windows, reset position and the error log.
 
@@ -69,6 +69,7 @@ Remaining risk: if Claude Code or grok renews at the very same moment, it may as
 - 주황 점: 값이 오래됐거나 갱신이 계속 실패하는 중. 원인은 `%LOCALAPPDATA%\UsageGauge\error.log`.
 - 우클릭 메뉴: 새로고침, 표시할 항목, 언어, Windows 시작 시 자동 실행, 위치 초기화, 오류 기록 보기.
 - 설치는 위 Install 명령 그대로, 삭제는 `-Uninstall`.
+- 다른 사람에게 줄 때: `install.ps1 -Package`로 만든 `dist\UsageGauge-Setup.exe` 하나만 주면 돼요. 더블클릭하면 설치되고, 설정 > 앱에서 지울 수 있어요. 서명이 없어서 처음 실행할 때 Windows가 경고해요(추가 정보 > 실행).
 
 ## Credits & license
 

@@ -1,4 +1,4 @@
-// UsageGauge - Codex / Claude / Grok / Antigravity weekly quota on the taskbar (glass ring gauges).
+﻿// UsageGauge - Codex / Claude / Grok / Antigravity weekly quota on the taskbar (glass ring gauges).
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -671,10 +671,33 @@ static class Autostart
 // entries is touched; the services' login files never are.
 static class Setup
 {
-    public const string Version = "1.0.0";
+    public static string Version { get { return Assembly.GetExecutingAssembly().GetName().Version.ToString(3); } }   // from AssemblyVersion
     public const string Repo = "https://github.com/oksk4524/usage-gauge";
     public static readonly string Exe = Path.Combine(Log.Dir, "UsageGauge.exe");
     const string UninstKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\UsageGauge";
+    // Start menu entry, so a widget that was quit can be started again without the setup file
+    static readonly string Shortcut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "UsageGauge.lnk");
+    static void MakeShortcut()
+    {
+        object shell = null, lnk = null;
+        try
+        {
+            var t = Type.GetTypeFromProgID("WScript.Shell");
+            shell = Activator.CreateInstance(t);
+            lnk = t.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { Shortcut });
+            var lt = lnk.GetType();
+            lt.InvokeMember("TargetPath", BindingFlags.SetProperty, null, lnk, new object[] { Exe });
+            lt.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, lnk, new object[] { Log.Dir });
+            lt.InvokeMember("Description", BindingFlags.SetProperty, null, lnk, new object[] { "Weekly AI quota gauges on the taskbar" });
+            lt.InvokeMember("Save", BindingFlags.InvokeMethod, null, lnk, null);
+        }
+        catch (Exception ex) { Log.Write("Start menu shortcut: " + ex.Message); }
+        finally
+        {
+            if (lnk != null && Marshal.IsComObject(lnk)) Marshal.ReleaseComObject(lnk);
+            if (shell != null && Marshal.IsComObject(shell)) Marshal.ReleaseComObject(shell);
+        }
+    }
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool DeleteFile(string path);
 
     public static Stream Resource(string name) { return Assembly.GetExecutingAssembly().GetManifestResourceStream(name); }
@@ -722,6 +745,7 @@ static class Setup
             foreach (var n in new[] { "NOTICE", "LICENSE" })
                 using (var s = Resource(n)) if (s != null) using (var f = File.Create(Path.Combine(Log.Dir, n + ".txt"))) s.CopyTo(f);
             Autostart.SetFor(Exe, true);
+            MakeShortcut();
             using (var k = Registry.CurrentUser.CreateSubKey(UninstKey))
             {
                 k.SetValue("DisplayName", "UsageGauge");
@@ -738,9 +762,9 @@ static class Setup
             }
             using (Process.Start(Exe)) { }
             Tell("설치했어요. 작업표시줄 오른쪽(시계 옆)에 떠요.\n\n• 컴퓨터를 켜면 자동으로 실행돼요.\n• 우클릭하면 메뉴가 나와요.\n"
-                + "• 지우려면 설정 > 앱에서 UsageGauge를 제거하세요.\n\n이 설치 파일은 지워도 돼요.",
+                + "• 끄고 나서 다시 켜려면 시작 메뉴에서 UsageGauge를 누르세요.\n• 지우려면 설정 > 앱에서 UsageGauge를 제거하세요.\n\n이 설치 파일은 지워도 돼요.",
                 "Installed. It sits on the right of the taskbar, next to the clock.\n\n• It starts with Windows.\n• Right-click it for the menu.\n"
-                + "• To remove it, uninstall UsageGauge in Settings > Apps.\n\nYou can delete this setup file now.", quiet, false);
+                + "• After quitting it, start it again from the Start menu.\n• To remove it, uninstall UsageGauge in Settings > Apps.\n\nYou can delete this setup file now.", quiet, false);
         }
         catch (Exception ex)
         {
@@ -756,6 +780,7 @@ static class Setup
         StopInstalled();
         Autostart.SetFor(Exe, false);
         try { Registry.CurrentUser.DeleteSubKeyTree(UninstKey, false); } catch { }
+        try { File.Delete(Shortcut); } catch { }
         Tell("제거했어요.", "UsageGauge was removed.", quiet, false);
         // this exe may be running from that folder: delete it once we have exited (retried: antivirus scans can hold files briefly)
         try
