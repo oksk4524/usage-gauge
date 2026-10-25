@@ -1,4 +1,4 @@
-﻿// UsageGauge - Codex / Claude / Grok / Antigravity weekly quota on the taskbar (glass ring gauges).
+// UsageGauge - Codex / Claude / Grok / Antigravity weekly quota on the taskbar (glass ring gauges).
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -40,6 +40,30 @@ static class Native
     [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr h, IntPtr dc);
     [DllImport("user32.dll")] public static extern bool SetWindowDisplayAffinity(IntPtr h, uint aff);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
+    [DllImport("uxtheme.dll", EntryPoint = "#135")] static extern int SetPreferredAppMode(int mode);
+    [DllImport("uxtheme.dll", EntryPoint = "#136")] static extern void FlushMenuThemes();
+    // Native menus in the widget's light/dark look. Undocumented uxtheme calls (Windows 10 1903+, as used by
+    // many desktop apps); skipped on older builds, where menus simply stay in the default look.
+    public static void MenuTheme(bool dark)
+    {
+        if (WinBuild() < 18362) return;
+        try { SetPreferredAppMode(dark ? 2 : 3); FlushMenuThemes(); } catch { }   // 2 = force dark, 3 = force light
+    }
+    static int build = -1;
+    static int WinBuild()
+    {
+        if (build >= 0) return build;
+        build = 0;
+        try
+        {
+            using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion"))
+                if (k != null) int.TryParse(k.GetValue("CurrentBuildNumber") as string, out build);
+        }
+        catch { }
+        return build;
+    }
     public delegate void WinEventProc(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time);
     [DllImport("user32.dll")] public static extern IntPtr SetWinEventHook(uint evMin, uint evMax, IntPtr mod, WinEventProc proc, uint pid, uint tid, uint flags);
     [DllImport("user32.dll")] public static extern bool UnhookWinEvent(IntPtr hook);
@@ -117,7 +141,7 @@ static class Native
 static class Log
 {
     public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "UsageGauge");
-    static readonly string FilePath = Path.Combine(Dir, "error.log");
+    public static readonly string FilePath = Path.Combine(Dir, "error.log");
     static readonly object Gate = new object();
     static string lastMsg; static DateTime lastAt; static int repeats;
     public static void Write(string msg)
@@ -592,6 +616,45 @@ static class Usage
     }
 }
 
+// "Start with Windows": the same HKCU Run entry install.ps1 -Autostart writes. Only an entry pointing at this exe counts
+// as ours; Task Manager's "Disabled" mark (StartupApproved) shows as off and is cleared when switched on again.
+static class Autostart
+{
+    const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    const string Approved = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+    static bool Ours(RegistryKey k)
+    {
+        var v = k == null ? null : k.GetValue("UsageGauge") as string;
+        return v != null && string.Equals(v.Trim().Trim('"'), Application.ExecutablePath, StringComparison.OrdinalIgnoreCase);
+    }
+    public static bool IsOn()
+    {
+        try
+        {
+            using (var k = Registry.CurrentUser.OpenSubKey(RunKey)) if (!Ours(k)) return false;
+            using (var k = Registry.CurrentUser.OpenSubKey(Approved))
+            {
+                var b = k == null ? null : k.GetValue("UsageGauge") as byte[];
+                return b == null || b.Length == 0 || (b[0] & 1) == 0;   // odd first byte = disabled in Task Manager
+            }
+        }
+        catch { return false; }
+    }
+    public static void Set(bool on)
+    {
+        try
+        {
+            using (var k = Registry.CurrentUser.CreateSubKey(RunKey))
+            {
+                if (on) k.SetValue("UsageGauge", "\"" + Application.ExecutablePath + "\"");
+                else if (Ours(k)) k.DeleteValue("UsageGauge", false);
+            }
+            using (var k = Registry.CurrentUser.OpenSubKey(Approved, true)) if (k != null) k.DeleteValue("UsageGauge", false);
+        }
+        catch (Exception ex) { Log.Write("Autostart: " + ex.Message); }
+    }
+}
+
 class GaugeForm : Form
 {
     // ---- layout (px) ----
@@ -692,7 +755,7 @@ class GaugeForm : Form
     bool loading = true, hover = false; float hoverT = 0;
     int busy = 0, generation = 0;
     readonly ToolTip tip = new ToolTip();
-    System.Windows.Forms.Timer refreshTimer, retryTimer, guardTimer, slowTimer, animTimer, resumeTimer, showTimer, topTimer, grabTimer;
+    System.Windows.Forms.Timer refreshTimer, retryTimer, guardTimer, slowTimer, animTimer, resumeTimer, showTimer, topTimer, grabTimer, loginWatchTimer;
     readonly List<System.Windows.Forms.Timer> timers = new List<System.Windows.Forms.Timer>();
     System.Windows.Forms.Timer NewTimer(int ms, EventHandler tick)
     {
@@ -726,12 +789,8 @@ class GaugeForm : Form
 
         for (int i = 0; i < N; i++) logos[i] = LoadPng(LogoFiles[i]);
 
-        var menu = new ContextMenuStrip();
-        menu.Opening += delegate { BuildMenu(menu); };
-        BuildMenu(menu);
-        ContextMenuStrip = menu;
-
         MouseDown += OnDown;
+        MouseUp += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Right) ShowMenu(e.Location); };
         MouseEnter += delegate { hover = true; Kick(); };
         MouseLeave += delegate { hover = false; Kick(); };
 
@@ -759,6 +818,12 @@ class GaugeForm : Form
             { resumeTimer.Stop(); Location = ClampToScreens(Location); GrabBackdrop(); Refresh_(true); });
         showTimer = NewTimer(220, delegate { showTimer.Stop(); if (!ShouldHide()) ShowNow(); });   // debounced re-show
         topTimer = NewTimer(60, delegate { topTimer.Stop(); Evaluate(); });                       // second topmost pass
+        loginWatchTimer = NewTimer(30000, delegate { OnLoginWatch(); });                        // after opening a sign-in
+        MouseMove += delegate(object s, MouseEventArgs e)
+        {
+            int i = BlockAt(e.Location);
+            Cursor = i >= 0 && i < LoginTool.Length && LoginExpired(qs[i]) ? Cursors.Hand : Cursors.Default;
+        };
 
         SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
         SystemEvents.PowerModeChanged += OnPowerChanged;
@@ -787,6 +852,7 @@ class GaugeForm : Form
             RefreshCachedState();
             Evaluate();   // already-fullscreen app at startup: hide right away
             GrabBackdrop(); Render(); Refresh_(true);
+            BeginInvoke((MethodInvoker)delegate { Native.MenuTheme(!lightBg); using (BuildMenu()) { } });   // warm up: first right-click opens at once
         };
     }
 
@@ -913,6 +979,104 @@ class GaugeForm : Form
         hover = ClientRectangle.Contains(PointToClient(Cursor.Position));   // mouse-leave is skipped by the move loop
         Kick();
         if (Location != before) { Location = ClampToScreens(Location); RefreshCachedState(); SavePos(); if (!GrabBackdrop()) Render(); }
+        else { int i = BlockAt(e.Location); if (i >= 0 && LoginExpired(qs[i])) LaunchLogin(i); }   // a click, not a drag
+    }
+
+    // ---- "login expired" gauges: a click opens the official tool's own sign-in, which saves the login we read ----
+    static readonly string[] LoginTool = { "codex", "claude", "grok" };
+    static readonly string[] LoginArgs = { "login", "auth login", "login" };
+    static bool LoginExpired(Quota q)
+    {
+        return (q.Failing || !q.Ok) && q.Error != null && q.Error.IndexOf("login expired", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+    int BlockAt(Point p)
+    {
+        float x = p.X / S - SH - PADX;
+        int k = (int)Math.Floor((x + SEP / 2f) / (BLOCK + SEP));
+        return k >= 0 && k < Vis.Length ? Vis[k] : -1;
+    }
+    // Looks the tool up the way a new terminal would (current user + system PATH, read fresh so a tool installed
+    // after the widget started is found), plus the usual per-user install folders. Nothing is tied to one PC.
+    static string FindTool(string name)
+    {
+        var dirs = new List<string>();
+        foreach (var t in new[] { EnvironmentVariableTarget.User, EnvironmentVariableTarget.Machine, EnvironmentVariableTarget.Process })
+        {
+            var p = Environment.GetEnvironmentVariable("Path", t);
+            if (p != null) dirs.AddRange(p.Split(';'));
+        }
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        dirs.Add(Path.Combine(home, @".local\bin"));
+        dirs.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm"));
+        dirs.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Microsoft\WinGet\Links"));
+        if (name == "claude")   // Claude Code bundled with the Claude desktop app: %APPDATA%\Claude\claude-code\<version>\
+            dirs.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"Claude\claude-code\*"));
+        foreach (var d in dirs)
+        {
+            if (d.EndsWith("\\*"))
+            {
+                string best = null; var bt = DateTime.MinValue;   // newest version folder
+                try
+                {
+                    string root = d.Substring(0, d.Length - 2);
+                    if (Directory.Exists(root))
+                        foreach (var v in Directory.GetDirectories(root))
+                        {
+                            string f = Path.Combine(v, name + ".exe");
+                            if (File.Exists(f) && File.GetLastWriteTimeUtc(f) > bt) { best = f; bt = File.GetLastWriteTimeUtc(f); }
+                        }
+                }
+                catch { }
+                if (best != null) return best;
+                continue;
+            }
+            foreach (var ext in new[] { ".exe", ".cmd", ".bat" })
+                try
+                {
+                    string dir = Environment.ExpandEnvironmentVariables(d.Trim().Trim('"'));
+                    if (dir.Length == 0) continue;
+                    string f = Path.Combine(dir, name + ext);
+                    if (File.Exists(f)) return f;
+                }
+                catch { }   // malformed PATH entry
+        }
+        return null;
+    }
+    readonly double[] lastLaunchMs = new double[N];
+    int loginWatchLeft;
+    void LaunchLogin(int i)
+    {
+        if (i >= LoginTool.Length) return;
+        double now = Clock.Elapsed.TotalMilliseconds;
+        if (now - lastLaunchMs[i] < 5000) return;   // ignore double clicks
+        lastLaunchMs[i] = now;
+        string cmdLine = (LoginTool[i] + " " + LoginArgs[i]).Trim();
+        string exe = FindTool(LoginTool[i]);
+        if (exe == null)
+        {
+            MessageBox.Show(L.T(
+                Names[i] + " 로그인이 만료됐어요.\n터미널에서 \"" + cmdLine + "\" 을 실행해 다시 로그인해 주세요" + (i == 1 ? " (Claude Code 안에서는 /login)." : "."),
+                Names[i] + " login has expired.\nRun \"" + cmdLine + "\" in a terminal to sign in again" + (i == 1 ? " (or /login inside Claude Code)." : ".")),
+                "UsageGauge", MessageBoxButtons.OK, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1, (MessageBoxOptions)0x40000);   // MB_TOPMOST
+            return;
+        }
+        try
+        {
+            var psi = new ProcessStartInfo("cmd.exe", "/k \"\"" + exe + "\" " + LoginArgs[i] + "\"");
+            psi.UseShellExecute = true;   // its own visible console window
+            psi.WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            using (Process.Start(psi)) { }
+            Log.Write("Opened sign-in: " + cmdLine);
+            loginWatchLeft = 10; loginWatchTimer.Stop(); loginWatchTimer.Start();   // pick up the new login within ~30 s
+        }
+        catch (Exception ex) { Log.Write("Could not open sign-in (" + cmdLine + "): " + ex.Message); }
+    }
+    void OnLoginWatch()
+    {
+        bool any = false;
+        foreach (int i in Vis) if (LoginExpired(qs[i])) any = true;
+        if (!any || --loginWatchLeft < 0) { loginWatchTimer.Stop(); return; }
+        Refresh_(false, false);
     }
 
     // ---- visibility & z-order: event-driven (instant), with a slow safety-net timer ----
@@ -1430,42 +1594,71 @@ class GaugeForm : Form
         if (d.TotalDays < 1) return L.T(hours + "시간", hours + "h");
         return L.T(days + "일 " + d.Hours + "시간", days + "d " + d.Hours + "h");
     }
-    // Right-click menu, rebuilt each time it opens so it follows the current language.
-    void BuildMenu(ContextMenuStrip menu)
+    // Right-click menu: a native Windows menu (opens at once, Windows 11 look, follows the widget's light/dark),
+    // rebuilt each time it opens so it follows the current language and state.
+    ContextMenu menu;
+    void ShowMenu(Point at)
     {
-        menu.Items.Clear();
-        menu.Items.Add(L.T("새로고침", "Refresh"), null, delegate { Refresh_(true); });
-        var lang = new ToolStripMenuItem(L.T("언어 / Language", "Language / 언어"));
-        foreach (var opt in new[] { new[] { "auto", L.T("자동 (Windows 언어)", "Auto (Windows language)") }, new[] { "ko", "한국어" }, new[] { "en", "English" } })
-        {
-            string mode = opt[0];
-            var it = new ToolStripMenuItem(opt[1]) { Checked = L.Mode == mode };
-            it.Click += delegate { L.Set(mode); UpdateTip(); Render(); };
-            lang.DropDownItems.Add(it);
-        }
-        menu.Items.Add(lang);
-        var gauges = new ToolStripMenuItem(L.T("표시할 항목", "Gauges"));
+        IntPtr prev = Native.GetForegroundWindow();
+        tip.Active = false;                       // the big tooltip would cover the menu
+        Native.MenuTheme(!lightBg);
+        if (menu != null) menu.Dispose();
+        menu = BuildMenu();
+        Native.SetForegroundWindow(Handle);       // so a click anywhere else closes the menu
+        menu.Show(this, at);                      // returns when the menu closes
+        Native.PostMessage(Handle, 0, IntPtr.Zero, IntPtr.Zero);   // WM_NULL, the documented TrackPopupMenu companion
+        tip.Active = true;
+        if (prev != IntPtr.Zero && prev != Handle && Native.GetForegroundWindow() == Handle) Native.SetForegroundWindow(prev);   // hand focus back
+    }
+    ContextMenu BuildMenu()
+    {
+        var m = new ContextMenu();
+        m.MenuItems.Add(L.T("새로고침", "Refresh"), delegate { Refresh_(true); });
+        m.MenuItems.Add("-");
+        var gauges = new MenuItem(L.T("표시할 항목", "Gauges"));
         for (int i = 0; i < N; i++)
         {
             int idx = i; bool avail = Available(i);
-            var it = new ToolStripMenuItem(Names[i] + (avail ? "" : L.T("  (이 PC에 로그인 없음)", "  (not set up on this PC)")))
+            var it = new MenuItem(Names[i] + (avail ? "" : L.T("  (이 PC에 로그인 없음)", "  (not set up on this PC)")))
                 { Checked = avail && !Hidden.Contains(Ids[i]), Enabled = avail };
             it.Click += delegate
             {
                 if (Hidden.Contains(Ids[idx])) Hidden.Remove(Ids[idx]); else Hidden.Add(Ids[idx]);
                 SaveHidden(); UpdateVisible(); UpdateTip(); Refresh_(true);
             };
-            gauges.DropDownItems.Add(it);
+            gauges.MenuItems.Add(it);
         }
-        menu.Items.Add(gauges);
-        var renew = new ToolStripMenuItem(L.T("Claude·Grok 로그인 자동 갱신 (실험적)", "Renew Claude/Grok logins (experimental)"))
-            { Checked = Usage.RenewLogins, ToolTipText = L.T(
-                "켜면 로그인이 만료됐을 때 위젯이 대신 갱신해요. 끄면 Claude Code·grok을 쓸 때만 값이 갱신돼요.",
-                "When on, the widget renews an expired login itself. When off, values update only while you use Claude Code / grok.") };
-        renew.Click += delegate { Usage.SetRenew(!Usage.RenewLogins); Refresh_(); };
-        menu.Items.Add(renew);
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(L.T("종료", "Quit"), null, delegate { Close(); });
+        m.MenuItems.Add(gauges);
+        var lang = new MenuItem(L.T("언어 / Language", "Language / 언어"));
+        foreach (var opt in new[] { new[] { "auto", L.T("자동 (Windows 언어)", "Auto (Windows language)") }, new[] { "ko", "한국어" }, new[] { "en", "English" } })
+        {
+            string mode = opt[0];
+            var it = new MenuItem(opt[1]) { Checked = L.Mode == mode, RadioCheck = true };
+            it.Click += delegate { L.Set(mode); UpdateTip(); Render(); };
+            lang.MenuItems.Add(it);
+        }
+        m.MenuItems.Add(lang);
+        m.MenuItems.Add("-");
+        bool auto = Autostart.IsOn();
+        m.MenuItems.Add(new MenuItem(L.T("Windows 시작 시 자동 실행", "Start with Windows"), delegate { Autostart.Set(!auto); }) { Checked = auto });
+        if (Available(1) || Available(2))
+            m.MenuItems.Add(new MenuItem(L.T("Claude·Grok 로그인 자동 갱신 (실험적)", "Renew Claude/Grok logins (experimental)"),
+                delegate { Usage.SetRenew(!Usage.RenewLogins); Refresh_(); }) { Checked = Usage.RenewLogins });
+        m.MenuItems.Add(L.T("위치 초기화", "Reset position"), delegate
+        {
+            Location = ClampToScreens(DefaultPos()); RefreshCachedState(); SavePos(); if (!GrabBackdrop()) Render();
+        });
+        m.MenuItems.Add("-");
+        m.MenuItems.Add(new MenuItem(L.T("오류 기록 보기", "View error log"), delegate { Open("notepad.exe", Log.FilePath); }) { Enabled = File.Exists(Log.FilePath) });
+        m.MenuItems.Add(L.T("GitHub 페이지 (도움말·문의)", "GitHub page (help, issues)"), delegate { Open("https://github.com/oksk4524/usage-gauge", null); });
+        m.MenuItems.Add("-");
+        m.MenuItems.Add(L.T("종료", "Quit"), delegate { Close(); });
+        return m;
+    }
+    static void Open(string what, string arg)
+    {
+        try { using (arg == null ? Process.Start(what) : Process.Start(what, "\"" + arg + "\"")) { } }
+        catch (Exception ex) { Log.Write("Could not open " + what + ": " + ex.Message); }
     }
 
     void UpdateTip()
@@ -1473,18 +1666,20 @@ class GaugeForm : Form
         var sbt = new StringBuilder();
         foreach (int i in Vis) sbt.Append(Line(qs[i])).Append("\n");
         tip.SetToolTip(this, sbt.ToString() + L.T(
-            "\nCodex·Claude·Grok 5분, Antigravity 15분마다 갱신 (자리 비우면 쉬었다가 돌아오면 바로 갱신)\n주황 점: 값이 오래됐거나 갱신이 계속 실패하는 중\n드래그: 이동 · 우클릭: 새로고침/언어/종료",
-            "\nCodex·Claude·Grok every 5 min, Antigravity every 15 min (paused while you're away)\nAmber dot: the value is out of date or updates keep failing\nDrag: move · Right-click: refresh/language/quit"));
+            "\nCodex·Claude·Grok 5분, Antigravity 15분마다 갱신 (자리 비우면 쉬었다가 돌아오면 바로 갱신)\n주황 점: 값이 오래됐거나 갱신이 계속 실패하는 중\n드래그: 이동 · 우클릭: 메뉴·설정",
+            "\nCodex·Claude·Grok every 5 min, Antigravity every 15 min (paused while you're away)\nAmber dot: the value is out of date or updates keep failing\nDrag: move · Right-click: menu and settings"));
     }
     static string Line(Quota q)
     {
-        if (!q.Ok) return q.Name + L.T(" 주간: 읽기 실패 (", " weekly: unavailable (") + q.Error + ")";
+        int ni = Array.IndexOf(Names, q.Name);
+        string hint = LoginExpired(q) && ni >= 0 && ni < LoginTool.Length ? L.T("\n   눌러서 다시 로그인", "\n   click to sign in again") : "";
+        if (!q.Ok) return q.Name + L.T(" 주간: 읽기 실패 (", " weekly: unavailable (") + q.Error + ")" + hint;
         string r = q.ResetsAt.HasValue ? L.T(" · 리셋 ", " · resets ") + q.ResetsAt.Value.ToLocalTime().ToString(L.T("M/d (ddd) HH:mm", "ddd MMM d, HH:mm"), L.Culture) : "";
         string at = q.LastOkUtc.ToLocalTime().ToString("HH:mm");
         string st = q.Failing
             ? L.T("\n   ⚠ " + at + " 값 표시 중 (최근 갱신 실패: ", "\n   ⚠ showing the " + at + " value (last update failed: ") + q.Error + ")"
             : L.T(" · " + at + " 기준", " · as of " + at);
-        return q.Name + L.T(" 주간 " + Math.Round(q.Remaining) + "% 남음", " weekly " + Math.Round(q.Remaining) + "% left") + r + st;
+        return q.Name + L.T(" 주간 " + Math.Round(q.Remaining) + "% 남음", " weekly " + Math.Round(q.Remaining) + "% left") + r + st + hint;
     }
 
     // ---- animation (timer only runs while something moves) ----
@@ -1694,7 +1889,10 @@ class GaugeForm : Form
 
         float tx = ring.Right + TEXT_GAP;
         string num = loading ? "··" : (q.Ok ? ((int)Math.Round(shown)).ToString() : "!");
-        string sub = loading ? L.T("불러오는 중", "loading") : (q.Ok ? ResetShort(q.ResetsAt) : L.T("읽기 실패", "unavailable"));
+        bool expired = !loading && LoginExpired(q);
+        string sub = loading ? L.T("불러오는 중", "loading")
+            : expired ? L.T("로그인 만료", "sign in")
+            : (q.Ok ? ResetShort(q.ResetsAt) : L.T("읽기 실패", "unavailable"));
 
         using (var p1 = TextPath(num, FNum, FontStyle.Bold, NUM_PX, 0))
         using (var p2 = TextPath(sub, FKor, FontStyle.Regular, SUB_PX, 0))
@@ -1715,7 +1913,8 @@ class GaugeForm : Form
             var clipState = g.Save();
             g.SetClip(new RectangleF(tx - 1, 0, TEXT_W + 2, H), CombineMode.Intersect);
             using (var wb = new SolidBrush(lightBg ? Color.FromArgb(245, 22, 22, 28) : Color.FromArgb(250, 255, 255, 255))) g.FillPath(wb, p1);
-            using (var sb = new SolidBrush(lightBg ? Color.FromArgb(225, 70, 70, 82) : Color.FromArgb(222, 222, 222, 232))) g.FillPath(sb, p2);
+            using (var sb = new SolidBrush(expired ? (lightBg ? Color.FromArgb(255, 176, 98, 0) : Color.FromArgb(250, 251, 191, 36))
+                : lightBg ? Color.FromArgb(225, 70, 70, 82) : Color.FromArgb(222, 222, 222, 232))) g.FillPath(sb, p2);
             g.Restore(clipState);
         }
     }

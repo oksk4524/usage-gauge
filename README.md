@@ -22,7 +22,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Autostart
 ```
 
 No git? **Code > Download ZIP**, unzip, run the last line there. Uninstall: same line with `-Uninstall`.
-Drag to move; right-click for refresh, language, gauges, quit.
+Drag to move. Right-click for refresh, gauges, language, start with Windows, reset position and the error log.
 
 ## How it works
 
@@ -38,7 +38,8 @@ endpoints, not public APIs, and may change. On failure a gauge keeps its last va
 goes to `%LOCALAPPDATA%\UsageGauge\error.log` (paste it into an issue).
 
 **Logins are only read**, never logged or sent anywhere but the service itself. Expired logins are renewed by
-using the official tool (Codex ~10 days, Claude/Grok a few hours); until then the gauge shows its last value.
+using the official tool (Codex ~10 days, Claude/Grok a few hours); until then the gauge shows its last value and says
+*sign in*: click it to open that tool's own sign-in (`codex login`, `claude auth login`, `grok login`) in a terminal.
 Optional *Renew Claude/Grok logins* (right-click, off by default) renews them itself: it re-reads first, skips if
 the file is busy or the tool already saved a newer login, and patches only the three token values in place.
 Remaining risk: if Claude Code or grok renews at the very same moment, it may ask you to sign in again.
@@ -60,8 +61,9 @@ Remaining risk: if Claude Code or grok renews at the very same moment, it may as
 ![widget-ko](docs/widget-ko.png)
 
 - 각 공식 도구가 PC에 저장한 로그인을 **읽기만** 해요. 로그인된 서비스만 칸이 나와요.
-- 로그인이 만료되면 공식 도구를 다시 쓸 때까지 마지막 값을 보여줘요. 우클릭 "로그인 자동 갱신(실험적)"을 켜면 위젯이 대신 갱신해요(기본 꺼짐).
+- 로그인이 만료되면 마지막 값과 함께 "로그인 만료"가 떠요. 누르면 그 도구의 로그인 창이 열려요. 우클릭 "로그인 자동 갱신(실험적)"을 켜면 위젯이 대신 갱신해요(기본 꺼짐).
 - 주황 점: 값이 오래됐거나 갱신이 계속 실패하는 중. 원인은 `%LOCALAPPDATA%\UsageGauge\error.log`.
+- 우클릭 메뉴: 새로고침, 표시할 항목, 언어, Windows 시작 시 자동 실행, 위치 초기화, 오류 기록 보기.
 - 설치는 위 Install 명령 그대로, 삭제는 `-Uninstall`.
 
 ## Credits & license
