@@ -140,6 +140,14 @@ static class Native
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; public POINT(int x, int y) { X = x; Y = y; } }
     [StructLayout(LayoutKind.Sequential)] public struct SIZE { public int W, H; public SIZE(int w, int h) { W = w; H = h; } }
     [StructLayout(LayoutKind.Sequential, Pack = 1)] public struct BLEND { public byte Op, Flags, Alpha, Format; }
+    [DllImport("user32.dll", EntryPoint = "UpdateLayeredWindow")]
+    static extern bool UpdateLayeredWindowAlpha(IntPtr h, IntPtr dst, IntPtr pos, IntPtr size, IntPtr src, IntPtr srcPos, int key, ref BLEND blend, int flags);
+    // Change only the window's overall opacity; its picture stays as it is (no redraw).
+    public static void SetAlpha(IntPtr h, byte a)
+    {
+        var b = new BLEND { Op = 0, Flags = 0, Alpha = a, Format = 1 };
+        UpdateLayeredWindowAlpha(h, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0, ref b, 2);
+    }
 
     public static string ClassOf(IntPtr h)
     {
@@ -899,7 +907,7 @@ class GaugeForm : Form
     bool loading = true, hover = false; float hoverT = 0;
     int busy = 0, generation = 0;
     readonly ToolTip tip = new ToolTip();
-    System.Windows.Forms.Timer refreshTimer, retryTimer, guardTimer, slowTimer, animTimer, resumeTimer, showTimer, topTimer, grabTimer, loginWatchTimer;
+    System.Windows.Forms.Timer refreshTimer, retryTimer, guardTimer, slowTimer, animTimer, resumeTimer, showTimer, topTimer, grabTimer, loginWatchTimer, fadeTimer;
     readonly List<System.Windows.Forms.Timer> timers = new List<System.Windows.Forms.Timer>();
     System.Windows.Forms.Timer NewTimer(int ms, EventHandler tick)
     {
@@ -963,6 +971,7 @@ class GaugeForm : Form
         showTimer = NewTimer(220, delegate { showTimer.Stop(); if (!ShouldHide()) ShowNow(); });   // debounced re-show
         topTimer = NewTimer(60, delegate { topTimer.Stop(); Evaluate(); });                       // second topmost pass
         loginWatchTimer = NewTimer(30000, delegate { OnLoginWatch(); });                        // after opening a sign-in
+        fadeTimer = NewTimer(15, delegate { FadeStep(); });
         MouseMove += delegate(object s, MouseEventArgs e)
         {
             int i = BlockAt(e.Location);
@@ -1244,7 +1253,7 @@ class GaugeForm : Form
             double nowMs = Clock.Elapsed.TotalMilliseconds;
             if (nowMs - lastLocMs < 50) { topTimer.Stop(); topTimer.Start(); return; }
             lastLocMs = nowMs;
-            if (ShouldHide()) { showTimer.Stop(); if (Visible) Hide(); return; }
+            if (ShouldHide()) { FadeOut(); return; }
             topTimer.Stop(); topTimer.Start();
             return;
         }
@@ -1298,16 +1307,38 @@ class GaugeForm : Form
 
     void Evaluate()
     {
-        if (ShouldHide())
-        {
-            showTimer.Stop();
-            if (Visible) Hide();          // hide instantly
-            return;
-        }
+        if (ShouldHide()) { FadeOut(); return; }
         if (!Visible) { if (!showTimer.Enabled) showTimer.Start(); return; }   // re-show after it settles (no flicker)
+        if (fadeTarget == 0) FadeTo(255, FADE_IN_MS);   // was fading out, but the fullscreen app is gone again
         KeepOnTop();
     }
-    void ShowNow() { Show(); KeepOnTop(); topTimer.Stop(); topTimer.Start(); if (!GrabBackdrop()) Render(); }
+    void ShowNow()
+    {
+        alpha = 0; fadeTarget = 0;   // appear from transparent
+        Show(); KeepOnTop(); topTimer.Stop(); topTimer.Start(); if (!GrabBackdrop()) Render();
+        FadeTo(255, FADE_IN_MS);
+    }
+
+    // ---- fade on hide/show: only the window's overall opacity changes, so it costs next to nothing ----
+    const double FADE_OUT_MS = 130, FADE_IN_MS = 220;
+    byte alpha = 255; int fadeTarget = 255; double fadeFrom, fadeStartMs, fadeMs;
+    void FadeOut() { showTimer.Stop(); if (Visible) FadeTo(0, FADE_OUT_MS); }
+    void FadeTo(int target, double ms)
+    {
+        if (target == fadeTarget && (fadeTimer.Enabled || alpha == target)) return;
+        fadeTarget = target; fadeFrom = alpha; fadeStartMs = Clock.Elapsed.TotalMilliseconds;
+        fadeMs = ms * Math.Abs(target - alpha) / 255.0;   // reversing midway takes only the rest of the way
+        fadeTimer.Start(); FadeStep();
+    }
+    void FadeStep()
+    {
+        double t = fadeMs <= 0 ? 1 : Math.Min(1, (Clock.Elapsed.TotalMilliseconds - fadeStartMs) / fadeMs);
+        alpha = (byte)Math.Round(fadeFrom + (fadeTarget - fadeFrom) * t);
+        if (IsHandleCreated && Visible) Native.SetAlpha(Handle, alpha);
+        if (t < 1) return;
+        fadeTimer.Stop();
+        if (fadeTarget == 0 && Visible) Hide();
+    }
     void KeepOnTop()
     {
         if (Visible && TaskbarAboveUs())
@@ -2073,7 +2104,7 @@ class GaugeForm : Form
             hBmp = bmp.GetHbitmap(Color.FromArgb(0));
             old = Native.SelectObject(memDc, hBmp);
             var size = new Native.SIZE(bmp.Width, bmp.Height); var src = new Native.POINT(0, 0); var pos = new Native.POINT(Left, Top);
-            var blend = new Native.BLEND { Op = 0, Flags = 0, Alpha = 255, Format = 1 };
+            var blend = new Native.BLEND { Op = 0, Flags = 0, Alpha = alpha, Format = 1 };
             Native.UpdateLayeredWindow(Handle, screenDc, ref pos, ref size, memDc, ref src, 0, ref blend, 2);
         }
         finally
