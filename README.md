@@ -22,6 +22,10 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Autostart
 ```
 
 No git? **Code > Download ZIP**, unzip, run the last line there. Uninstall: same line with `-Uninstall`.
+
+To share it as one file, `install.ps1 -Package` builds `dist\UsageGauge-Setup.exe`: double-clicking it installs
+(start with Windows included), and it is removed from **Settings > Apps**. It is unsigned, so Windows SmartScreen
+warns on first run (*More info > Run anyway*).
 Drag to move. Right-click for refresh, gauges, language, start with Windows, reset position and the error log.
 
 ## How it works

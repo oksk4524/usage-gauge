@@ -7,6 +7,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -14,6 +15,14 @@ using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
+
+[assembly: AssemblyTitle("UsageGauge")]
+[assembly: AssemblyProduct("UsageGauge")]
+[assembly: AssemblyDescription("Weekly AI quota gauges on the Windows taskbar")]
+[assembly: AssemblyCompany("oksk4524")]
+[assembly: AssemblyCopyright("MIT License")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
 
 class Quota
 {
@@ -622,16 +631,16 @@ static class Autostart
 {
     const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
     const string Approved = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
-    static bool Ours(RegistryKey k)
+    static bool Ours(RegistryKey k, string exe)
     {
         var v = k == null ? null : k.GetValue("UsageGauge") as string;
-        return v != null && string.Equals(v.Trim().Trim('"'), Application.ExecutablePath, StringComparison.OrdinalIgnoreCase);
+        return v != null && string.Equals(v.Trim().Trim('"'), exe, StringComparison.OrdinalIgnoreCase);
     }
     public static bool IsOn()
     {
         try
         {
-            using (var k = Registry.CurrentUser.OpenSubKey(RunKey)) if (!Ours(k)) return false;
+            using (var k = Registry.CurrentUser.OpenSubKey(RunKey)) if (!Ours(k, Application.ExecutablePath)) return false;
             using (var k = Registry.CurrentUser.OpenSubKey(Approved))
             {
                 var b = k == null ? null : k.GetValue("UsageGauge") as byte[];
@@ -640,18 +649,123 @@ static class Autostart
         }
         catch { return false; }
     }
-    public static void Set(bool on)
+    public static void Set(bool on) { SetFor(Application.ExecutablePath, on); }
+    public static void SetFor(string exe, bool on)
     {
         try
         {
             using (var k = Registry.CurrentUser.CreateSubKey(RunKey))
             {
-                if (on) k.SetValue("UsageGauge", "\"" + Application.ExecutablePath + "\"");
-                else if (Ours(k)) k.DeleteValue("UsageGauge", false);
+                if (on) k.SetValue("UsageGauge", "\"" + exe + "\"");
+                else if (Ours(k, exe)) k.DeleteValue("UsageGauge", false);
             }
             using (var k = Registry.CurrentUser.OpenSubKey(Approved, true)) if (k != null) k.DeleteValue("UsageGauge", false);
         }
         catch (Exception ex) { Log.Write("Autostart: " + ex.Message); }
+    }
+}
+
+// The single-file build for sharing (UsageGauge-Setup.exe, made by install.ps1 -Package; logos and notices are embedded).
+// Run from anywhere, it copies itself to %LOCALAPPDATA%\UsageGauge, starts with Windows and shows up in
+// Settings > Apps, from where "/uninstall" removes it again. Nothing outside that folder and those two registry
+// entries is touched; the services' login files never are.
+static class Setup
+{
+    public const string Version = "1.0.0";
+    public const string Repo = "https://github.com/oksk4524/usage-gauge";
+    public static readonly string Exe = Path.Combine(Log.Dir, "UsageGauge.exe");
+    const string UninstKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\UsageGauge";
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool DeleteFile(string path);
+
+    public static Stream Resource(string name) { return Assembly.GetExecutingAssembly().GetManifestResourceStream(name); }
+    public static bool Packaged { get { return Assembly.GetExecutingAssembly().GetManifestResourceInfo("codex.png") != null; } }
+    public static bool IsInstalledCopy
+    {
+        get { return string.Equals(Path.GetFullPath(Application.ExecutablePath), Path.GetFullPath(Exe), StringComparison.OrdinalIgnoreCase); }
+    }
+    static bool Ask(string ko, string en, bool quiet)
+    {
+        return quiet || MessageBox.Show(L.T(ko, en), "UsageGauge", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+    }
+    static void Tell(string ko, string en, bool quiet, bool error)
+    {
+        if (!quiet) MessageBox.Show(L.T(ko, en), "UsageGauge", MessageBoxButtons.OK, error ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+    }
+    // Stop the installed copy (never this process), so its file can be replaced or deleted.
+    static void StopInstalled()
+    {
+        int me = Process.GetCurrentProcess().Id;
+        foreach (var p in Process.GetProcessesByName("UsageGauge"))
+            using (p)
+                try
+                {
+                    if (p.Id == me || !string.Equals(p.MainModule.FileName, Exe, StringComparison.OrdinalIgnoreCase)) continue;
+                    p.Kill(); p.WaitForExit(20000);   // with a request in flight, exiting can take several seconds
+                }
+                catch { }
+    }
+
+    public static void Install(bool quiet)
+    {
+        if (!Ask("UsageGauge를 설치할까요?\n\n작업표시줄에 Codex·Claude·Grok·Antigravity의 주간 남은 사용량을 보여줘요.\n"
+                + "이 PC에 로그인된 서비스만 나타나고, 로그인 정보는 읽기만 해요.\n\n설치 위치: " + Log.Dir,
+                "Install UsageGauge?\n\nIt shows how much of your weekly Codex, Claude, Grok and Antigravity quota is left, on the taskbar.\n"
+                + "Only services signed in on this PC appear, and their logins are only read.\n\nInstall folder: " + Log.Dir, quiet)) return;
+        try
+        {
+            StopInstalled();
+            Directory.CreateDirectory(Log.Dir);
+            for (int i = 0; ; i++)
+                try { File.Copy(Application.ExecutablePath, Exe, true); break; }
+                catch (IOException) { if (i >= 20) throw; Thread.Sleep(500); }
+            DeleteFile(Exe + ":Zone.Identifier");   // a downloaded setup carries "from the internet"; the installed copy must not ask at every sign-in
+            foreach (var n in new[] { "NOTICE", "LICENSE" })
+                using (var s = Resource(n)) if (s != null) using (var f = File.Create(Path.Combine(Log.Dir, n + ".txt"))) s.CopyTo(f);
+            Autostart.SetFor(Exe, true);
+            using (var k = Registry.CurrentUser.CreateSubKey(UninstKey))
+            {
+                k.SetValue("DisplayName", "UsageGauge");
+                k.SetValue("DisplayVersion", Version);
+                k.SetValue("Publisher", "oksk4524");
+                k.SetValue("DisplayIcon", Exe);
+                k.SetValue("InstallLocation", Log.Dir);
+                k.SetValue("URLInfoAbout", Repo);
+                k.SetValue("UninstallString", "\"" + Exe + "\" /uninstall");
+                k.SetValue("QuietUninstallString", "\"" + Exe + "\" /uninstall /quiet");
+                k.SetValue("NoModify", 1, RegistryValueKind.DWord);
+                k.SetValue("NoRepair", 1, RegistryValueKind.DWord);
+                k.SetValue("EstimatedSize", (int)(new FileInfo(Exe).Length / 1024) + 1, RegistryValueKind.DWord);
+            }
+            using (Process.Start(Exe)) { }
+            Tell("설치했어요. 작업표시줄 오른쪽(시계 옆)에 떠요.\n\n• 컴퓨터를 켜면 자동으로 실행돼요.\n• 우클릭하면 메뉴가 나와요.\n"
+                + "• 지우려면 설정 > 앱에서 UsageGauge를 제거하세요.\n\n이 설치 파일은 지워도 돼요.",
+                "Installed. It sits on the right of the taskbar, next to the clock.\n\n• It starts with Windows.\n• Right-click it for the menu.\n"
+                + "• To remove it, uninstall UsageGauge in Settings > Apps.\n\nYou can delete this setup file now.", quiet, false);
+        }
+        catch (Exception ex)
+        {
+            Log.Write("Install failed: " + ex.Message);
+            Tell("설치하지 못했어요: " + ex.Message, "Could not install: " + ex.Message, quiet, true);
+        }
+    }
+
+    public static void Uninstall(bool quiet)
+    {
+        if (!Ask("UsageGauge를 제거할까요?\n설정과 기록도 함께 지워져요. (각 서비스의 로그인은 그대로예요.)",
+                 "Remove UsageGauge?\nIts settings and log go too. (Your service logins are left alone.)", quiet)) return;
+        StopInstalled();
+        Autostart.SetFor(Exe, false);
+        try { Registry.CurrentUser.DeleteSubKeyTree(UninstKey, false); } catch { }
+        Tell("제거했어요.", "UsageGauge was removed.", quiet, false);
+        // this exe may be running from that folder: delete it once we have exited (retried: antivirus scans can hold files briefly)
+        try
+        {
+            string q = "\"" + Log.Dir + "\"";
+            var psi = new ProcessStartInfo("cmd.exe", "/c for /l %i in (1,1,8) do (ping 127.0.0.1 -n 2 >nul & rd /s /q " + q + " 2>nul & if not exist " + q + " exit /b)");
+            psi.CreateNoWindow = true; psi.UseShellExecute = false; psi.WorkingDirectory = Path.GetTempPath();
+            using (Process.Start(psi)) { }
+        }
+        catch { }
     }
 }
 
@@ -738,7 +852,12 @@ class GaugeForm : Form
     readonly Image[] logos = new Image[N];
     static Image LoadPng(string file)
     {
-        try { using (var src = Image.FromFile(Path.Combine(Dir, file))) return new Bitmap(src); }
+        try
+        {
+            using (var s = Setup.Resource(file))   // embedded in the shared build; loose files next to the exe otherwise
+            using (var src = s != null ? Image.FromStream(s) : Image.FromFile(Path.Combine(Dir, file)))
+                return new Bitmap(src);
+        }
         catch (Exception ex) { Log.Write(file + ": " + ex.Message); return null; }
     }
     Bitmap backdrop; bool backdropAllowed = true;
@@ -1650,7 +1769,7 @@ class GaugeForm : Form
         });
         m.MenuItems.Add("-");
         m.MenuItems.Add(new MenuItem(L.T("오류 기록 보기", "View error log"), delegate { Open("notepad.exe", Log.FilePath); }) { Enabled = File.Exists(Log.FilePath) });
-        m.MenuItems.Add(L.T("GitHub 페이지 (도움말·문의)", "GitHub page (help, issues)"), delegate { Open("https://github.com/oksk4524/usage-gauge", null); });
+        m.MenuItems.Add(L.T("GitHub 페이지 (도움말·문의)", "GitHub page (help, issues)"), delegate { Open(Setup.Repo, null); });
         m.MenuItems.Add("-");
         m.MenuItems.Add(L.T("종료", "Quit"), delegate { Close(); });
         return m;
@@ -1951,17 +2070,21 @@ static class Program
         Application.ThreadException += delegate(object s, ThreadExceptionEventArgs e) { Log.Write("ui: " + e.Exception); };
         AppDomain.CurrentDomain.UnhandledException += delegate(object s, UnhandledExceptionEventArgs e) { Log.Write("fatal: " + e.ExceptionObject); };
 
+        try { Native.SetProcessDPIAware(); } catch { }
+        Application.EnableVisualStyles();
+        L.Load();
+        bool quiet = Array.IndexOf(args, "/quiet") >= 0;
+        if (Array.IndexOf(args, "/uninstall") >= 0) { Setup.Uninstall(quiet); return; }
+        if (Setup.Packaged && !Setup.IsInstalledCopy) { Setup.Install(quiet); return; }   // the shared setup file
+
         Mutex m = null; bool created = false;
         try { m = new Mutex(true, "UsageGauge_SingleInstance", out created); }
         catch (AbandonedMutexException) { created = true; }   // previous instance died: take over
         catch (Exception ex) { Log.Write("mutex: " + ex.Message); created = true; }
         if (!created) { if (m != null) m.Dispose(); return; }
 
-        try { Native.SetProcessDPIAware(); } catch { }
         try { System.Net.ServicePointManager.SecurityProtocol |= (System.Net.SecurityProtocolType)3072; } catch { }   // TLS 1.2
         try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
-        Application.EnableVisualStyles();
-        L.Load();
         Usage.LoadSettings();
         Usage.CleanupTemps();
 
