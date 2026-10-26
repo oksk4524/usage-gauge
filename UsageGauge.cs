@@ -1320,7 +1320,7 @@ class GaugeForm : Form
     }
 
     // ---- fade on hide/show: only the window's overall opacity changes, so it costs next to nothing ----
-    const double FADE_OUT_MS = 130, FADE_IN_MS = 220;
+    const double FADE_OUT_MS = 100, FADE_IN_MS = 150;   // short: a fullscreen video must not wait on it
     byte alpha = 255; int fadeTarget = 255; double fadeFrom, fadeStartMs, fadeMs;
     void FadeOut() { showTimer.Stop(); if (Visible) FadeTo(0, FADE_OUT_MS); }
     void FadeTo(int target, double ms)
