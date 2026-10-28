@@ -1,66 +1,60 @@
-# 처음 설정하기
+# Setup and troubleshooting
 
-## 준비
+## Supported logins
 
-Windows 10/11에서 아래 도구 중 쓰는 것 **하나 이상**에 먼저 로그인하세요.
-모든 도구를 설치할 필요는 없어요.
+Sign in to one or more of these tools before installing UsageGauge. You only need the tools you use.
 
-| 보고 싶은 사용량 | 필요한 로그인 |
+| Gauge | Required local login |
 | --- | --- |
-| Codex | Codex CLI의 로컬 로그인 |
-| Claude | Claude Code의 로컬 로그인 |
-| Grok | Grok CLI의 로컬 로그인 |
-| Antigravity · Gemini | Antigravity CLI(`agy`) 설치 및 로그인 |
+| Codex | Codex CLI |
+| Claude | Claude Code |
+| Grok | Grok CLI |
+| Antigravity / Gemini | Antigravity CLI (`agy`) |
 
-ChatGPT·Claude 웹사이트 로그인만으로는 표시되지 않아요. Codex가 OS 키 저장소에만 로그인 정보를 보관하는 설정도 현재 지원하지 않아요.
-Gemini 표시는 Antigravity의 사용량이며, Gemini 웹앱 한도가 아니에요.
+Browser-only ChatGPT and Claude logins do not work. Codex credentials stored only in the OS keyring are not supported. The Gemini gauge reads Antigravity's quota, not the Gemini web app limit.
 
-## 설치
+## Install or update
 
-1. [공식 GitHub 릴리스](https://github.com/oksk4524/usage-gauge/releases/latest)에서 **UsageGauge-Setup.exe**를 받으세요.
-2. 실행 후 설치에 동의하면 작업표시줄 시계 옆에 위젯이 나타나요.
-3. 드래그로 위치를 옮기고, 우클릭으로 표시 항목·언어·시작 시 자동 실행을 바꾸세요.
+Download **UsageGauge-Setup.exe** from the [latest release](https://github.com/oksk4524/usage-gauge/releases/latest), run it and confirm installation.
 
-설치 위치는 `%LOCALAPPDATA%\UsageGauge`예요. 시작 메뉴에서 다시 실행할 수 있고, 삭제는 **설정 > 앱 > UsageGauge**에서 해요.
-업데이트도 새 설치파일을 실행하면 돼요. 실행 중인 기존 위젯은 설치 과정에서 종료·교체돼요.
+The widget appears next to the taskbar clock. Drag it to move it. Right-click for services, language, refresh and startup settings.
 
-### Windows가 경고하면
+Files are installed under `%LOCALAPPDATA%\UsageGauge`. The installer adds a Start menu shortcut and enables startup with Windows. To remove it, use **Settings > Apps > UsageGauge**.
 
-아직 코드 서명이 없는 개인 오픈소스 프로그램이라 SmartScreen 또는 백신이 경고할 수 있어요.
-공식 릴리스 주소와 SHA-256을 확인한 뒤, 신뢰할 수 있다고 판단할 때만 실행하세요.
-SmartScreen에 허용 선택지가 표시되는 경우 **추가 정보 > 실행**으로 진행할 수 있어요.
-회사 보안 정책으로 차단된 경우에는 관리자에게 문의하세요. 백신이나 보안 기능을 끄지는 마세요.
+To update, run the new installer. It closes and replaces the installed copy.
 
-다운로드한 파일의 해시는 PowerShell에서 확인할 수 있어요.
+## Security warnings
+
+The installer is unsigned. Windows SmartScreen or antivirus software may warn about it. Check that the file came from this repository's release page, and compare its SHA-256 with **SHA256SUMS.txt** in the same release:
 
 ```powershell
 Get-FileHash .\UsageGauge-Setup.exe -Algorithm SHA256
 ```
 
-결과를 같은 릴리스에 올라온 **SHA256SUMS.txt** 및 릴리스 본문의 값과 비교하세요.
-이 비교는 다운로드가 게시된 파일과 같은지 확인하는 용도이며, 코드 서명이나 안전 보증을 대신하지 않아요.
+A matching hash confirms that your download matches the published file; it is not a code signature or a safety guarantee.
 
-## 숫자 읽는 법
+If you trust the file and SmartScreen offers the option, select **More info > Run anyway**. Do not disable antivirus. On a managed PC, ask your administrator if policy blocks installation.
 
-- **남은 비율**이에요. 100%는 해당 주간 한도가 아직 모두 남았다는 뜻이에요.
-- 옆의 시간은 한도가 리셋될 때까지 남은 시간이에요. 정확한 시각은 마우스를 올리면 볼 수 있어요.
-- Codex·Claude·Grok은 기본 5분, Antigravity는 15분 간격으로 조회해요. 자리를 비우면 조회를 쉬어요.
-- 주황 점은 조회 실패 등으로 값이 오래됐다는 뜻이에요. 마지막으로 성공한 값이므로 현재 수치로 단정하지 마세요.
+## Common issues
 
-## 안 보이거나 갱신되지 않으면
+**A service is missing.** Sign in through its official tool, then right-click the widget and refresh. UsageGauge only shows services with login files in supported locations.
 
-- **서비스가 안 보여요:** 해당 공식 도구에서 로그인한 뒤 위젯 우클릭 > 새로고침을 해보세요. 위젯은 지원하는 위치에 로컬 로그인 정보가 있는 서비스만 표시해요.
-- **로그인이 만료됐어요:** 해당 항목을 눌러 공식 도구의 로그인 창을 열고 다시 로그인하세요.
-- **계속 주황 점이에요:** 공식 도구가 정상 작동하는지 확인하고 새로고침하세요. 서비스 내부 API가 바뀐 경우에는 위젯 수정이 필요할 수 있어요.
-- **모니터를 옮긴 뒤 크기가 이상해요:** 우클릭 > 종료 후 시작 메뉴에서 다시 실행하세요. 배율은 시작할 때 읽어요.
-- **위젯을 껐어요:** 시작 메뉴에서 UsageGauge를 다시 실행하세요.
+**The login has expired.** Click the affected gauge to open the official tool's sign-in command, then sign in again.
 
-문제가 계속되면 [이슈](https://github.com/oksk4524/usage-gauge/issues)에 Windows 버전, 문제가 생긴 서비스, 증상을 남겨주세요.
-오류 기록은 우클릭 메뉴 또는 `%LOCALAPPDATA%\UsageGauge\error.log`에서 볼 수 있어요.
-**로그는 공유 전에 확인하고 개인정보를 가리세요. 로그인 파일·토큰·비밀번호는 올리지 마세요.**
+**A gauge has an amber dot.** Its value is stale. Check that the official tool works, then refresh. If the provider changed its internal API, UsageGauge may need an update.
 
-## 로그인 정보와 자동 갱신
+**The size looks wrong after moving monitors.** Quit and reopen UsageGauge from the Start menu. Display scaling is read at startup.
 
-기본은 로컬 로그인 정보를 읽어 각 서비스에 직접 조회해요. UsageGauge의 수집 서버나 사용 추적은 없어요.
-우클릭의 **로그인 자동 갱신(실험적)**은 기본 꺼짐이에요. 직접 켜면 Claude/Grok의 갱신된 토큰을 해당 로그인 파일에 저장해요.
-공식 도구와 정확히 동시에 갱신하면 재로그인이 필요할 수 있으니, 필요하지 않으면 꺼둬도 돼요.
+**The widget was closed.** Open UsageGauge from the Start menu.
+
+## Login renewal
+
+Credentials are read without being changed by default. Requests go directly to each service; UsageGauge has no collection server or telemetry.
+
+Experimental Claude/Grok renewal is off by default. If enabled from the right-click menu, it saves refreshed tokens to those tools' credential files. If the official tool refreshes at the same instant, you may need to sign in again. Leave it off if you do not need it.
+
+## Reporting a problem
+
+[Open an issue](https://github.com/oksk4524/usage-gauge/issues) with your Windows version, affected service and what happened.
+
+The error log is available from the right-click menu or at `%LOCALAPPDATA%\UsageGauge\error.log`. Review it and remove personal information before sharing. Never upload login files, access tokens or passwords.
