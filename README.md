@@ -8,7 +8,7 @@ UsageGauge keeps your remaining weekly quota and reset times for Claude Code, Co
 
 Windows 10/11. Free and open source.
 
-**A small native app.** Written in C#, with a ~146 KB installer and no Electron runtime. Quota checks pause after 15 minutes of inactivity.
+It's genuinely lightweight, so you can leave it running while you work. When you want to check your quota, just glance at the taskbar.
 
 ![UsageGauge on a dark taskbar](docs/widget.png)
 
@@ -86,6 +86,8 @@ Output: `dist\UsageGauge-Setup.exe`. Logos, LICENSE and NOTICE are embedded.
 
 <details>
 <summary>Technical details and limitations</summary>
+
+Native C#, with a ~146 KB installer and no Electron runtime. Quota checks pause after 15 minutes of inactivity.
 
 ## How it works
 
