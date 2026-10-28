@@ -739,9 +739,9 @@ static class Setup
     public static void Install(bool quiet)
     {
         if (!Ask("UsageGauge를 설치할까요?\n\n작업표시줄에 Codex·Claude·Grok·Antigravity의 주간 남은 사용량을 보여줘요.\n"
-                + "이 PC에 로그인된 서비스만 나타나고, 로그인 정보는 읽기만 해요.\n\n설치 위치: " + Log.Dir,
+                + "이 PC에 로그인된 서비스만 나타나요. 기본은 로그인 정보를 읽기만 해요.\n자동 갱신을 직접 켜면 Claude/Grok 로그인 파일을 갱신해요.\n\n설치 위치: " + Log.Dir,
                 "Install UsageGauge?\n\nIt shows how much of your weekly Codex, Claude, Grok and Antigravity quota is left, on the taskbar.\n"
-                + "Only services signed in on this PC appear, and their logins are only read.\n\nInstall folder: " + Log.Dir, quiet)) return;
+                + "Only services signed in on this PC appear. Credentials are read-only by default.\nEnabling optional renewal updates Claude/Grok credential files.\n\nInstall folder: " + Log.Dir, quiet)) return;
         try
         {
             StopInstalled();
