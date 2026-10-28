@@ -1,15 +1,15 @@
-# UsageGauge
-
-A tiny Windows taskbar widget showing how much of your **weekly** quota is left for
-Codex, Claude, Grok and Antigravity (Gemini, Claude/GPT).
+# UsageGauge ⏱️
+> **Never hit unexpected AI rate limits again.**
+> A lightweight, privacy-first Windows taskbar widget that keeps your weekly quota for Claude Code, Codex, Grok, and Antigravity always in sight.
 
 ![widget](docs/widget.png)
 ![widget on a light taskbar](docs/widget-light.png)
 
-- Ring gauges on the taskbar with time left until each weekly reset; hover for exact times.
-- Shows only services set up on your PC (hide any via right-click). Hides over fullscreen apps.
-- ~30 MB RAM, well under 1% CPU, one ~70 KB executable. No other tools needed.
-- Light/dark taskbars, display scaling (read at start-up), English/Korean (follows Windows; override via right-click).
+### ✨ Why UsageGauge?
+- 📊 **Glanceable Quota Rings**: Minimalist taskbar gauges with exact countdown to weekly quota resets.
+- 🔒 **Zero Telemetry, 100% Local**: Only reads your local CLI auth tokens. Zero network tracking, zero third-party servers.
+- 🪶 **Ultra Featherweight**: Built with native Windows C# (~70 KB single binary, <30 MB RAM, <0.1% CPU). No Electron bloat.
+- 🎨 **Native Windows Feel**: Seamlessly adapts to light/dark taskbars and display scaling.
 
 ## Install
 
