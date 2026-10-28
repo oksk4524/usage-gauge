@@ -1,12 +1,16 @@
 # UsageGauge
 
-Shows your remaining weekly quota for Claude Code, Codex, Grok and Antigravity on the Windows taskbar, with a countdown to each reset.
+**Check your AI quota without opening a terminal.**
+
+UsageGauge keeps your remaining weekly quota and reset times for Claude Code, Codex, Grok and Antigravity next to the Windows clock.
 
 **[Download for Windows](https://github.com/oksk4524/usage-gauge/releases/latest/download/UsageGauge-Setup.exe)**
 
 Windows 10/11. Free and open source. Written in C#; no Electron runtime.
 
 ![UsageGauge on a dark taskbar](docs/widget.png)
+
+When one tool is running low, you can check what is left in the others before switching.
 
 Drag to move it. Right-click to choose which services to show, change the language or turn off startup with Windows.
 
