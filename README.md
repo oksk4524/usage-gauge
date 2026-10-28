@@ -1,65 +1,73 @@
 # UsageGauge
 
-**Check your AI quota without opening a terminal.**
+## Your AI quota, in sight
 
-UsageGauge keeps your remaining weekly quota and reset times for Claude Code, Codex, Grok and Antigravity next to the Windows clock.
+See the weekly quota you have left in Claude Code, Codex, Grok and Antigravity without opening a terminal to check.
+
+![UsageGauge on the Windows taskbar](docs/widget.png)
 
 **[Download for Windows](https://github.com/oksk4524/usage-gauge/releases/latest/download/UsageGauge-Setup.exe)**
 
-Windows 10/11. Free and open source.
+Free and open source. Windows 10/11. Uses your existing local tool logins.
 
-It's genuinely lightweight, so you can leave it running while you work. When you want to check your quota, just glance at the taskbar.
+## Check before you switch
 
-![UsageGauge on a dark taskbar](docs/widget.png)
+When Claude is running low, it helps to know what Codex has left. UsageGauge puts your tools together so you can check them without leaving your work.
 
-When one tool is running low, you can check what is left in the others before switching.
+Each ring shows **weekly quota remaining**, with the time until it resets. Hover for the exact reset time. You do not need a dashboard or terminal window open just to see where you stand.
 
-Drag to move it. Right-click to choose which services to show, change the language or turn off startup with Windows.
+## Leave it running
 
-## Install
+It's genuinely lightweight, so you can keep it on while you work. It sits next to the clock, ready when you want a quick look.
 
-1. Sign in to at least one supported tool on this PC: Codex CLI, Claude Code, Grok CLI or Antigravity CLI (`agy`).
-2. Download and run **UsageGauge-Setup.exe**, then confirm installation.
-3. The widget appears next to the taskbar clock.
+- **About 146 KB** for the Windows installer.
+- **Native C# on .NET Framework**, with no Electron or Node.js runtime.
+- **Scheduled quota checks**, every five minutes for Codex, Claude and Grok; fifteen for Antigravity.
+- **Pauses quota checks after 15 minutes of inactivity.**
 
-Browser-only ChatGPT or Claude logins are not supported. You do not need a separate UsageGauge account.
+Antigravity uses its own CLI for readings, which adds work during those refreshes.
 
-The installer is **unsigned**, so Windows or antivirus software may warn. Check the [release](https://github.com/oksk4524/usage-gauge/releases/latest) and its SHA-256 before running it. Do not disable antivirus.
+## Make it fit your setup
 
-It starts with Windows by default. Reopen it from the Start menu after quitting, or remove it through **Settings > Apps > UsageGauge**.
-
-[Setup and troubleshooting](docs/QUICKSTART.md)
-
-## Reading the gauges
-
-The percentage is **quota remaining**, not quota used. 100% means the full weekly quota is still available. Hover for the exact reset time.
-
-An amber dot means the reading is stale after a failed refresh. The displayed number is the last successful reading, not necessarily the current balance.
-
-Codex, Claude and Grok refresh every five minutes; Antigravity every fifteen. Refreshes pause while you are away.
-
-## Credentials
-
-UsageGauge reads the login files saved by the supported tools and sends authenticated requests directly to each service. It has no telemetry or collection server.
-
-Login files are read-only by default. If you enable experimental Claude/Grok renewal, it writes refreshed tokens back to those tools' login files. That option is off by default.
-
-This is an unofficial tool. Provider changes can break readings, and CLI quotas may differ from website or app quotas. The Gemini gauge reads Antigravity's pool, not the Gemini web app limit.
-
-<details>
-<summary>More screenshots</summary>
-
-Light taskbar:
+Drag it where you want it. Right-click to choose the services you see, switch between English and Korean, or change whether it starts with Windows.
 
 ![UsageGauge on a light taskbar](docs/widget-light.png)
 
-Korean:
+You only need to set up the tools you actually use. UsageGauge shows services with supported local login files, rather than filling your taskbar with empty gauges.
 
-![UsageGauge in Korean](docs/widget-ko.png)
+Screenshots above were captured from earlier builds. The numbers are examples, not live readings.
 
-Screenshots were captured from earlier builds. Their numbers are examples, not live readings.
+## No new account
 
-</details>
+UsageGauge uses the logins your tools have already saved on this PC. Requests go directly to the corresponding service. There is no UsageGauge account, telemetry or collection server.
+
+Login files are read-only by default. Experimental Claude/Grok renewal is optional and off by default; turning it on allows refreshed tokens to be saved back to those tools' login files.
+
+## Install
+
+1. Sign in locally to at least one supported tool: **Codex CLI, Claude Code, Grok CLI or Antigravity CLI (`agy`)**.
+2. Download and run **UsageGauge-Setup.exe**, then confirm installation.
+3. Look next to the taskbar clock. Drag to move the widget; right-click for settings.
+
+It starts with Windows by default. After quitting, reopen it from the Start menu. Remove it through **Settings > Apps > UsageGauge**.
+
+The installer is **unsigned**, so Windows or antivirus software may warn. Check the [release and SHA-256](https://github.com/oksk4524/usage-gauge/releases/latest) before deciding to run it. Do not disable antivirus.
+
+**[Download for Windows](https://github.com/oksk4524/usage-gauge/releases/latest/download/UsageGauge-Setup.exe)**
+
+[Setup and troubleshooting](docs/QUICKSTART.md)
+
+## Questions
+
+**Will it work with a website login?** No. Browser-only ChatGPT and Claude logins are not supported. A supported local tool login is required.
+
+**Does it show quota used or quota left?** Quota left. 100% means the full weekly quota is still available. These are weekly pools, not a promise that every other rate limit is clear.
+
+**What does an amber dot mean?** The last refresh failed and the reading is stale. The widget keeps the last successful value, which may no longer be current.
+
+**Is the Gemini gauge my Gemini web app limit?** No. It reads Antigravity's Gemini pool. Website, app and CLI quotas can differ.
+
+**Is this official?** No. UsageGauge is an independent open-source project. It uses internal service endpoints, so provider changes can interrupt readings.
 
 <details>
 <summary>Build from source</summary>
@@ -87,8 +95,6 @@ Output: `dist\UsageGauge-Setup.exe`. Logos, LICENSE and NOTICE are embedded.
 <details>
 <summary>Technical details and limitations</summary>
 
-Native C#, with a ~146 KB installer and no Electron runtime. Quota checks pause after 15 minutes of inactivity.
-
 ## How it works
 
 | Gauge | Source | Login read from |
@@ -110,7 +116,7 @@ Remaining risk: if Claude Code or grok renews at the very same moment, it may as
 
 ## Known limitations
 
-- Codex logins kept in the OS keyring (`cli_auth_credentials_store = "keyring"`/`"auto"`) aren't read; nor is a Claude Code login kept anywhere but `~/.claude/.credentials.json`.
+- Codex logins kept in the OS keyring (`cli_auth_credentials_store = "keyring"`/`"auto"`) aren't read; Claude Code credentials must be available in a local `.credentials.json` file (the default path or `CLAUDE_CONFIG_DIR`).
 - Several Grok accounts in `auth.json`: the Grok gauge stays off (can't tell which is active).
 - `agy` installed but not signed in: the Antigravity gauges show an error.
 - Scaling is read at start-up: after changing it, or moving the widget to a monitor with different scaling, restart the widget.
