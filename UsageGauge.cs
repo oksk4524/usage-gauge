@@ -992,11 +992,42 @@ class GaugeForm : Form
         {
             using (var s = Setup.Resource(file))   // embedded in the shared build; loose files next to the exe otherwise
             using (var src = s != null ? Image.FromStream(s) : Image.FromFile(Path.Combine(Dir, file)))
-                return new Bitmap(src);
+            {
+                // keep at most 128 px: enough for a 16-unit logo up to 3x display scale (the Grok file alone is 1024 px, 4 MB decoded)
+                int side = Math.Max(src.Width, src.Height);
+                if (side <= 128) return new Bitmap(src);
+                int w = Math.Max(1, src.Width * 128 / side), h = Math.Max(1, src.Height * 128 / side);
+                var b = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+                using (var g = Graphics.FromImage(b))
+                {
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.PixelOffsetMode = PixelOffsetMode.HighQuality; g.CompositingQuality = CompositingQuality.HighQuality;
+                    g.DrawImage(src, new Rectangle(0, 0, w, h));
+                }
+                return b;
+            }
         }
         catch (Exception ex) { Log.Write(file + ": " + ex.Message); return null; }
     }
     Bitmap backdrop; bool backdropAllowed = true;
+    // The official logo files are large (Grok 1024 px, Gemini/Antigravity 512-540 px). Scaling them down to
+    // 16 px with high-quality filtering on every frame cost 6-16 ms per gauge. Scale once per display scale instead.
+    readonly Dictionary<Image, KeyValuePair<int, Bitmap>> logoCache = new Dictionary<Image, KeyValuePair<int, Bitmap>>();
+    Image Scaled(Image src, float units)
+    {
+        int px = Math.Max(1, (int)Math.Round(units * S));
+        KeyValuePair<int, Bitmap> hit;
+        if (logoCache.TryGetValue(src, out hit) && hit.Key == px) return hit.Value;
+        var b = new Bitmap(px, px, PixelFormat.Format32bppPArgb);
+        using (var g = Graphics.FromImage(b))
+        {
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.CompositingQuality = CompositingQuality.HighQuality; g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.DrawImage(src, new Rectangle(0, 0, px, px));
+        }
+        if (hit.Value != null) hit.Value.Dispose();
+        logoCache[src] = new KeyValuePair<int, Bitmap>(px, b);
+        return b;
+    }
 
     static readonly Stopwatch Clock = Stopwatch.StartNew();   // monotonic: immune to clock/DST changes
     double animStartMs;
@@ -2136,6 +2167,7 @@ class GaugeForm : Form
         {
             g.SmoothingMode = SmoothingMode.AntiAlias; g.PixelOffsetMode = PixelOffsetMode.HighQuality;
             g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.CompositingQuality = CompositingQuality.HighQuality;
+            g.DrawImageUnscaled(ShadowLayer(), 0, 0);   // static: drawn once per size/scale
             g.ScaleTransform(S, S);          // draw in 100% units, scaled to the display
             g.TranslateTransform(SH, SH);
             DrawAll(g);
@@ -2166,15 +2198,33 @@ class GaugeForm : Form
         }
     }
 
-    void DrawPanel(Graphics g)
+    // The soft drop shadow (four anti-aliased rounded fills, ~6 ms) never changes between frames: it depends only on
+    // the widget size and display scale, so it is drawn once and reused.
+    Bitmap shadowLayer; int shadowKey;
+    Bitmap ShadowLayer()
     {
-        var r = new RectangleF(0.5f, 0.5f, W - 1f, H - 1f);
-        using (var shadow = new SolidBrush(Color.FromArgb(9, 0, 0, 0)))
-            for (int i = SH; i >= 1; i--)
-            {
-                var sr = new RectangleF(r.X - i + 0.5f, r.Y - i + 1.5f, r.Width + 2 * i - 1, r.Height + 2 * i - 1);
-                using (var sp = Round(sr, RADIUS + i)) g.FillPath(shadow, sp);
-            }
+        int key = PW * 7919 + PH * 31 + (int)(S * 1000);
+        if (shadowLayer != null && shadowKey == key) return shadowLayer;
+        var b = new Bitmap(PW, PH, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(b))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias; g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.CompositingQuality = CompositingQuality.HighQuality;
+            g.ScaleTransform(S, S); g.TranslateTransform(SH, SH);
+            var r = new RectangleF(0.5f, 0.5f, W - 1f, H - 1f);
+            using (var shadow = new SolidBrush(Color.FromArgb(9, 0, 0, 0)))
+                for (int i = SH; i >= 1; i--)
+                {
+                    var sr = new RectangleF(r.X - i + 0.5f, r.Y - i + 1.5f, r.Width + 2 * i - 1, r.Height + 2 * i - 1);
+                    using (var sp = Round(sr, RADIUS + i)) g.FillPath(shadow, sp);
+                }
+        }
+        if (shadowLayer != null) shadowLayer.Dispose();
+        shadowLayer = b; shadowKey = key;
+        return b;
+    }    void DrawPanel(Graphics g)
+    {
+        var r = new RectangleF(0.5f, 0.5f, W - 1f, H - 1f);   // the drop shadow comes from ShadowLayer()
         using (var path = Round(r, RADIUS))
         {
             var state = g.Save();
@@ -2247,7 +2297,7 @@ class GaugeForm : Form
         var logo = idx == 0 && lightBg && codexDarkLogo != null ? codexDarkLogo :
             idx == 2 && lightBg && grokDarkLogo != null ? grokDarkLogo : logos[idx];
         if (idx == 2) lr = RectangleF.Inflate(lr, -0.5f, -0.5f);
-        if (logo != null) g.DrawImage(logo, lr); // Official light/dark assets; no recoloring.
+        if (logo != null) g.DrawImage(Scaled(logo, lr.Width), lr); // Official light/dark assets; no recoloring.
 
         float tx = ring.Right + TEXT_GAP;
         string num = loading ? "··" : (q.Ok ? Usage.RemainingNumber(shown) : "!");
