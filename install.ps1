@@ -43,7 +43,7 @@ function Build($out) {
     $res = @(Get-ChildItem (Join-Path $PSScriptRoot 'assets') -Filter *.png | ForEach-Object { "/resource:$($_.FullName),$($_.Name)" })
     $res += "/resource:$(Join-Path $PSScriptRoot 'NOTICE'),NOTICE", "/resource:$(Join-Path $PSScriptRoot 'LICENSE'),LICENSE"
     & $csc /nologo /target:winexe /optimize+ /codepage:65001 "/out:$out" "/win32icon:$(Join-Path $PSScriptRoot 'assets\app.ico')" @res `
-        /r:System.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll $src
+        /r:System.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll $src | Out-Host   # compiler messages must not become part of the return value (that made a failed build look successful)
     return $LASTEXITCODE -eq 0
 }
 
