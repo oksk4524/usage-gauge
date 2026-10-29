@@ -2052,6 +2052,7 @@ class GaugeForm : Form
     static double EaseOut(double t) { t = Math.Max(0, Math.Min(1, t)); return 1 - Math.Pow(1 - t, 4); }
     void Step()
     {
+        if (dragging) { animTimer.Stop(); return; }   // resumed by Kick() after the drop
         bool moving = false;
         if (!loading)
         {
@@ -2104,7 +2105,9 @@ class GaugeForm : Form
     void Render()
     {
         if (!IsHandleCreated || !Visible) return;
-        if (dragging && !animTimer.Enabled) return;   // don't fight the move loop
+        // Never redraw during a drag: a full frame costs tens of ms and starves the move loop (measured: 10 window
+        // moves per 0.6 s drag instead of 50 while the hover animation was still running). OnDown redraws on release.
+        if (dragging) return;
         try
         {
             using (var bmp = Compose()) Push(bmp);
