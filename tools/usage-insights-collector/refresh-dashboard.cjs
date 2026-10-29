@@ -25,7 +25,8 @@ async function main(){
   const {build}=require(path.join(APP,'tools','usage-details-preview-v6','builder.cjs'));
   let config={};try{config=JSON.parse(fs.readFileSync(path.join(DATA,'config.json'),'utf8'));}catch{}
   const extra=Array.isArray(config.extraAsideRoots)?config.extraAsideRoots.filter(p=>typeof p==='string'&&fs.existsSync(p)):[];
-  const local=await c.collect({idKey:c.loadIdKey(path.join(HOME,'collector-id-key')),indexPath:path.join(HOME,'usage-index.sqlite'),extraAsideRoots:extra});
+  let overrides={};try{const o=JSON.parse(fs.readFileSync(path.join(DATA,'project-overrides.json'),'utf8'));if(o&&o.sessions&&typeof o.sessions==='object')overrides=o.sessions;}catch{}
+  const local=await c.collect({idKey:c.loadIdKey(path.join(HOME,'collector-id-key')),indexPath:path.join(HOME,'usage-index.sqlite'),extraAsideRoots:extra,projectOverrides:overrides});
   const input=f=>{const p=path.join(DATA,f);return saved(fs.existsSync(p)?p:null);};
   const snap=assemble(local,{codex:input('codex.jsonl'),limits:input('limits.jsonl'),antigravity:input('antigravity-limits.jsonl')});
   const json=JSON.stringify(snap);

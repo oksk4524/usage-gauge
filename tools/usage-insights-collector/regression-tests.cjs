@@ -87,6 +87,10 @@ async function asideParentProjectCase(){const {DatabaseSync}=require('node:sqlit
   assert.equal(byProj.get('unknown'),10,'only the conversation opened without a project stays unfiled');
   assert.equal([...byProj.entries()].filter(([k])=>k!=='unknown').reduce((s,[,v])=>s+v,0),30,'parent, child and grandchild share the project');
   assert.equal(new Set(Object.values(r.localNames||{})).has('Game'),true,'the inherited project keeps its name on this PC');
+  // reviewed overrides: only for conversations without a project, never over a real one, unknown project ids ignored
+  const r2=await c.collect({home,to:'2026-10-29',timezone:'Asia/Seoul',projectOverrides:{LONE:'proj1',PPPP:'nope',CCCC:'nope'}});const d2=r2.datasets.find(x=>x.id==='claude_aside_local');const u2=d2.breakdowns.project.filter(x=>x.id==='unknown').reduce((s,x)=>s+x.totals.total,0);
+  assert.equal(u2,0,'the unfiled conversation takes its reviewed project');assert.equal(r2.audit.projectOverridesApplied,1,'only the conversation without any project used the list');
+  const r3=await c.collect({home,to:'2026-10-29',timezone:'Asia/Seoul',projectOverrides:{LONE:'no-such-project'}});assert.equal(r3.datasets.find(x=>x.id==='claude_aside_local').breakdowns.project.filter(x=>x.id==='unknown').reduce((s,x)=>s+x.totals.total,0),10,'an unknown project id is ignored');
  }finally{fsx.rmSync(home,{recursive:true,force:true});}}
 // Aside sessions whose message file is missing must keep the dataset partial and say so (guards against silently dropped code)
 async function asideMissingCase(){const {DatabaseSync}=require('node:sqlite');const home=fsx.mkdtempSync(pathx.join(osx.tmpdir(),'ug-aside-')),base=pathx.join(home,'.aside','u','0');fsx.mkdirSync(pathx.join(base,'sessions','2026-10-28_AAAA'),{recursive:true});
