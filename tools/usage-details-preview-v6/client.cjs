@@ -185,6 +185,26 @@ module.exports = function usageGaugeApp(S, logos, notices, C) {
     if(brk.length){const e=brk[0].efficiency;out.push(t('쉬었다 이어 쓴 대화가 '+srcName(brk[0])+' 새 토큰의 '+pct(e.expiryRewriteTokens,e.freshTokens)+'%',resumeAfterBreak(brk[0],e)));}
     return out;}
   const resumeAfterBreak=(d,e)=>'Resuming after breaks is '+pct(e.expiryRewriteTokens,e.freshTokens)+'% of new tokens in '+srcName(d);
+  // this week's heaviest projects and models: new tokens (re-read history excluded), one row per source, sources never added
+  const SRC_SHORT={claude_cli_local:'Claude Code',claude_aside_local:'Aside',codex_cli_local:['Codex 앱','Codex app'],codex_aside_local:['Aside Codex','Aside Codex'],grok_cli_local:'Grok CLI',grok_aside_local:['Aside Grok','Aside Grok'],antigravity_local:'Antigravity',aside_aside_local:'Aside'};
+  const srcShortName=d=>{const v=SRC_SHORT[d.id];return Array.isArray(v)?t(v[0],v[1]):v||sourceShort(d);};
+  function modelName(id){const s=String(id||'');if(!s||s==='unknown')return t('모델 기록 없음','Model not recorded');
+    let m=s.match(/^claude-([a-z]+)-(\d+)-(\d+)/i);if(m)return m[1][0].toUpperCase()+m[1].slice(1)+' '+m[2]+'.'+m[3];
+    m=s.match(/^gpt-([\d.]+)-?(.*)$/i);if(m)return 'GPT-'+m[1]+(m[2]?' '+m[2].split('-').map(w=>w[0].toUpperCase()+w.slice(1)).join(' '):'');
+    m=s.match(/^(grok|gemini)-(.+)$/i);if(m)return m[1][0].toUpperCase()+m[1].slice(1)+' '+m[2];return s;}
+  const tone=(d,model)=>{const s=String(model||'')+' '+d.provider;return /claude|opus|sonnet|haiku/i.test(String(model||''))?'plum':/gpt|codex|openai/i.test(String(model||''))?'slate':/grok/i.test(s)?'sand':/gemini|antigravity/i.test(s)?'peri':d.provider==='claude'?'plum':d.provider==='codex'?'slate':'plum';};
+  function weekRows(dim){const to=S.period&&S.period.to;if(!to)return [];const from=new Date(Date.parse(to+'T00:00:00Z')-6*864e5).toISOString().slice(0,10),out=[];
+    for(const d of (S.datasets||[])){if(d.scope==='account'||recovered(d)||!d.breakdowns)continue;const m=new Map();
+      for(const r of d.breakdowns[dim]||[]){if(!r||r.date<from||r.date>to||!r.totals||!C.number(r.totals.total))continue;const id=String(r.id||'unknown').replace(/^(project|session) /,'');const o=m.get(id)||{fresh:0,total:0};o.total+=r.totals.total;o.fresh+=r.totals.total-(C.number(r.totals.cacheRead)?r.totals.cacheRead:0);m.set(id,o);}
+      for(const [id,o] of m)if(o.fresh>0)out.push({d,id,...o});}
+    return out.sort((a,b)=>b.fresh-a.fresh).slice(0,6);}
+  function weekList(title,rows,nameFn){if(!rows.length)return '';const max=rows[0].fresh;
+    return '<div class="week-col"><h3 class="week-title">'+title+'</h3><ol class="week-list">'+rows.map((r,i)=>{const ratio=r.total/Math.max(1,r.fresh);
+      return '<li><span class="week-rank num">'+(i+1)+'</span><span class="week-name">'+esc(nameFn(r))+'<small>'+esc(srcShortName(r.d))+'</small></span><span class="week-value num">'+compact(r.fresh)+'</span><span class="week-bar"><i class="tone-'+tone(r.d,r.id)+'" style="width:'+Math.max(2,Math.round(r.fresh/max*100))+'%"></i></span>'
+        +(ratio>=50&&r.total>=1e8?'<span class="week-note">'+t('다시 읽은 양 포함 '+compact(r.total)+', 새로 처리한 양의 '+Math.round(ratio)+'배','With re-reads '+compact(r.total)+', '+Math.round(ratio)+'x the new tokens')+'</span>':'')+'</li>';}).join('')+'</ol></div>';}
+  function weekHTML(){const p=weekList(t('프로젝트','Projects'),weekRows('project'),r=>r.id==='unknown'?t('프로젝트 미지정','No project'):nameOf(r.id)),
+      m=weekList(t('모델','Models'),weekRows('model'),r=>r.id==='unknown'||!r.id?providerName(r.d.provider)+t(' (모델 기록 없음)',' (model not recorded)'):modelName(r.id));
+    return p||m?'<div class="today-block week"><h2 class="today-head">'+t('이번 주 많이 쓴 곳','Where it went this week')+'<span>'+t('새로 처리한 토큰, 지난 7일, 출처끼리 더하지 않음','new tokens, last 7 days, sources not added')+'</span></h2><div class="week-grid">'+p+m+'</div></div>':'';}
   function todayHTML(){const now=Date.now();
     const lims=(S.limits||[]).filter(l=>l.status==='observed'&&remOf(l)!==null&&!(l.provider==='antigravity'&&l.window!=='7d')).sort((a,b)=>(remOf(a)<=0)-(remOf(b)<=0)||(Date.parse(a.resetAt)||9e15)-(Date.parse(b.resetAt)||9e15));
     const newest=Math.max(...(S.limits||[]).map(l=>Date.parse(l.capturedAt)).filter(Number.isFinite),0),age=newest?Math.round((now-newest)/60000):null;
@@ -201,7 +221,7 @@ module.exports = function usageGaugeApp(S, logos, notices, C) {
     // limits are on the taskbar widget all the time; the per-service details below keep reset times and accounts
     return ''
       +'<div class="today-block"><h2 class="today-head">'+t('지금 할 일','What to do now')+'</h2>'+rows+'</div>'
-      +((trendHTML||hb.length)?'<div class="today-block"><h2 class="today-head">'+t('이번 주 흐름','This week')+'<span>'+t('지난 7일과 그 전 7일, 출처끼리 더하지 않음','last 7 days vs the 7 before, sources not added')+'</span></h2>'+(trendHTML?'<div class="today-trend">'+trendHTML+'</div>':'')+(hb.length?'<p class="today-habit">'+t('최근 30일 습관: ','Last 30 days: ')+hb.map(esc).join(t(', ','; '))+'</p>':'')+'</div>':'')
+      +weekHTML()+((trendHTML||hb.length)?'<div class="today-block"><h2 class="today-head">'+t('지난주와 비교','Versus last week')+'<span>'+t('지난 7일과 그 전 7일, 출처끼리 더하지 않음','last 7 days vs the 7 before, sources not added')+'</span></h2>'+(trendHTML?'<div class="today-trend">'+trendHTML+'</div>':'')+(hb.length?'<p class="today-habit">'+t('최근 30일 습관: ','Last 30 days: ')+hb.map(esc).join(t(', ','; '))+'</p>':'')+'</div>':'')
       +'<h2 class="today-detail-head">'+t('서비스별 자세히','By service')+'</h2>';}
 
   function sourceShort(x){const p={codex:'Codex',claude:'Claude',grok:'Grok',antigravity:'Antigravity',aside:'Aside'}[x.provider]||x.provider;return p+(x.scope==='account'?t('(서버)','(server)'):x.source==='aside_messages'?t('(Aside)','(Aside)'):t('(이 PC)','(this PC)'));}
