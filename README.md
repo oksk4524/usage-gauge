@@ -44,9 +44,11 @@ goes to `%LOCALAPPDATA%\UsageGauge\error.log` (paste it into an issue).
 **Logins are only read**, never logged or sent anywhere but the service itself. Expired logins are renewed by
 using the official tool (Codex ~10 days, Claude/Grok a few hours); until then the gauge shows its last value and says
 *sign in*: click it to open that tool's own sign-in (`codex login`, `claude auth login`, `grok login`) in a terminal.
-Optional *Renew Claude/Grok logins* (right-click, off by default) renews them itself: it re-reads first, skips if
-the file is busy or the tool already saved a newer login, and patches only the three token values in place.
-Remaining risk: if Claude Code or grok renews at the very same moment, it may ask you to sign in again.
+Direct login renewal has been removed to avoid racing the official tools and overwriting newer credentials.
+The widget never sends OAuth refresh POSTs or writes/deletes provider login files. A legacy renew-logins.txt
+setting is left untouched but no longer enables renewal. On HTTP 401 it re-reads the login and retries only
+when the official tool has already supplied a different access token. Antigravity runs the official CLI,
+whose own authentication behavior is controlled by that CLI.
 
 ## Known limitations
 
@@ -65,7 +67,7 @@ Remaining risk: if Claude Code or grok renews at the very same moment, it may as
 ![widget-ko](docs/widget-ko.png)
 
 - 각 공식 도구가 PC에 저장한 로그인을 **읽기만** 해요. 로그인된 서비스만 칸이 나와요.
-- 로그인이 만료되면 마지막 값과 함께 "로그인 만료"가 떠요. 누르면 그 도구의 로그인 창이 열려요. 우클릭 "로그인 자동 갱신(실험적)"을 켜면 위젯이 대신 갱신해요(기본 꺼짐).
+- 로그인이 만료되면 마지막 값과 함께 "로그인 만료"가 떠요. 누르면 공식 도구의 로그인 창이 열려요. 위젯의 직접 인증 갱신·파일 쓰기는 동시 저장 충돌을 막기 위해 제거했어요. 이전 자동 갱신 설정 파일은 지우거나 바꾸지 않지만 더는 사용하지 않아요.
 - 주황 점: 값이 오래됐거나 갱신이 계속 실패하는 중. 원인은 `%LOCALAPPDATA%\UsageGauge\error.log`.
 - 우클릭 메뉴: 새로고침, 표시할 항목, 언어, Windows 시작 시 자동 실행, 위치 초기화, 오류 기록 보기.
 - 설치는 위 Install 명령 그대로, 삭제는 `-Uninstall`.
@@ -74,5 +76,5 @@ Remaining risk: if Claude Code or grok renews at the very same moment, it may as
 ## Credits & license
 
 Inspired by [CodexBar](https://github.com/steipete/CodexBar) / [Win-CodexBar](https://github.com/nesszer/Win-CodexBar);
-icons from Win-CodexBar and [lobe-icons](https://github.com/lobehub/lobe-icons) (see [NOTICE](NOTICE)).
-Product names and logos belong to OpenAI, Anthropic, xAI and Google; this project isn't affiliated with them. MIT.
+current service logos come from official sites or official press kits, checked on 2026-10-29. OpenAI and Claude use transparent official symbols rasterized from preserved SVG originals with normalized transparent padding; the other logos retain original PNG bytes (see [source records](assets/service-logos.json) and [NOTICE](NOTICE)).
+Product names and logos belong to OpenAI, Anthropic, xAI, Google and Aside Computer Inc.; this project isn't affiliated with them. MIT.

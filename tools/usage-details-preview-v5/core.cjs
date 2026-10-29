@@ -1,0 +1,46 @@
+'use strict';
+// Shared by the browser and dependency-free tests. All periods end at snapshot.period.to.
+module.exports = function usageCore(snapshot) {
+  const number = v => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  const shift = (date, n) => new Date(Date.parse(date + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+  // 7d/30d always end at snapshot.period.to. 'all' starts at the selected dataset's first day, or the global horizon when it has none.
+  function firstDate(dataset) { const ds = (dataset?.days || []).map(d => d?.date).filter(v => /^\d{4}-\d{2}-\d{2}$/.test(v || '')).sort(); return ds.length && ds[0] <= snapshot.period.to ? ds[0] : null; }
+  // lastDate: newest day with a recorded (non-missing, numeric) value; used by the 'last30' view for periods without records.
+  function lastDate(dataset) { const ds = (dataset?.days || []).filter(d => d && d.coverageStatus !== 'missing' && number(d.tokens) && /^\d{4}-\d{2}-\d{2}$/.test(d.date || '') && d.date <= snapshot.period.to).map(d => d.date).sort(); return ds.length ? ds[ds.length - 1] : null; }
+  // ranges: groups dates into consecutive ranges [{from,to,count}].
+  function ranges(dates) { const out = []; for (const d of [...new Set(dates || [])].filter(v => /^\d{4}-\d{2}-\d{2}$/.test(v || '')).sort()) { const l = out[out.length - 1]; if (l && shift(l.to, 1) === d) { l.to = d; l.count++; } else out.push({from: d, to: d, count: 1}); } return out; }
+  function bounds(period, dataset) { if (period === 'last30') { const e = lastDate(dataset) || snapshot.period.to; return {from: shift(e, -29), to: e}; } const to = snapshot.period.to; return {from: period === 'all' ? (firstDate(dataset) || snapshot.period.from) : shift(to, -(period === '30d' ? 29 : 6)), to}; }
+  function days(dataset, period) {
+    const b = bounds(period, dataset), map = new Map((dataset.days || []).map(d => [d.date, d])), rows = [];
+    for (let date = b.from; date <= b.to; date = shift(date, 1)) {
+      const d = map.get(date);
+      rows.push(d && d.coverageStatus !== 'missing' ? {...d} : {date, tokens:null, input:null, output:null, cacheRead:null, cacheCreate:null, reasoning:null, records:null, coverageStatus:'missing'});
+    }
+    return rows;
+  }
+  function sum(rows, key = 'tokens') {
+    const known = rows.filter(r => number(r[key]));
+    return known.length ? known.reduce((n, r) => n + r[key], 0) : null;
+  }
+  function groups(dataset, period, dim) {
+    const b = bounds(period, dataset), m = new Map();
+    for (const r of dataset.breakdowns?.[dim] || []) {
+      if (r.date < b.from || r.date > b.to) continue;
+      const id = r.label || 'unknown';
+      if (!m.has(id)) m.set(id, {label:id, values:[]});
+      m.get(id).values.push({tokens:r.totals?.total});
+    }
+    return [...m.values()].map(r => ({label:r.label, tokens:sum(r.values)})).sort((a,b) => (b.tokens ?? -1) - (a.tokens ?? -1));
+  }
+  function compare(dataset, period) {
+    if (period === 'all' || period === 'last30' || !dataset.coverage?.comparisonSafe) return {safe:false};
+    const current = days(dataset, period), count = current.length, b = bounds(period, dataset);
+    const map = new Map((dataset.days || []).map(d => [d.date, d]));
+    const previous = Array.from({length:count}, (_,i) => map.get(shift(b.from, i - count)));
+    const complete = r => r && r.coverageStatus === 'observed' && number(r.tokens) && dataset.latestCompleteDate && r.date <= dataset.latestCompleteDate && !(dataset.coverage?.missingDates || []).includes(r.date);
+    if (!current.every(complete) || !previous.every(complete)) return {safe:false};
+    const a = sum(current), z = sum(previous);
+    return {safe:true, current:a, previous:z, difference:a-z, percent:z === 0 ? null : (a-z)/z*100, from:shift(b.from,-count),to:shift(b.from,-1)};
+  }
+  return {number,shift,bounds,firstDate,lastDate,ranges,days,sum,groups,compare};
+};

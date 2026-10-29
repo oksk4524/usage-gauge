@@ -1,0 +1,82 @@
+[hidden]{display:none!important}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.na{color:var(--muted)}
+.table-wrap th{white-space:nowrap}
+.table-wrap td.num,.table-wrap th.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.table-wrap td.date,.table-wrap td.status-cell{white-space:nowrap;text-align:left}
+.records-table th:last-child,.records-table td:last-child{text-align:left}
+.th-sub{display:block;margin-top:2px;font-size:11px;line-height:1.35;font-weight:400;white-space:normal;min-width:88px;max-width:150px;color:var(--muted)}
+.records-table th:first-child,.records-table td:first-child{position:sticky;left:0;z-index:1;background:var(--paper)}
+.records-table th:first-child{background:var(--soft)}
+.records-table .num .th-sub{margin-left:auto}
+.rule-line{padding:0 24px 10px;font-size:12px;color:var(--muted)}
+.source-summary{padding:0 24px 18px;font-size:13px;color:var(--muted)}
+.mini th,.mini td{padding:8px 10px}
+.no-record{margin:16px 0;padding:16px;border:1px solid var(--line);border-radius:6px;background:var(--soft)}
+.no-record p{margin:6px 0 12px;color:var(--muted);font-size:13px}
+.records-summary+.no-record{margin:0 24px 12px}
+.action-row{display:flex;gap:10px;flex-wrap:wrap}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:8px;font-size:12px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{display:inline-block;width:12px;height:12px;border-radius:2px;font-style:normal;line-height:12px;text-align:center}
+.sw.obs{background:var(--bar)}
+.sw.par{border:1.5px dashed var(--bar)}
+.sw.mis{color:var(--muted);font-size:13px}
+.scroll-hint{margin-top:6px}
+.chart-scroll .chart{height:174px!important;max-width:none}
+.chart .bar.partial{fill:none;stroke:var(--bar);stroke-width:1.5;stroke-dasharray:3 2}
+.chart .hit{fill:transparent}
+.chart g{outline:none}
+.chart g:focus-visible .hit{fill:var(--brand-soft);stroke:var(--brand);stroke-width:2}
+.fold{margin-top:10px}
+.fold summary{cursor:pointer;font-size:12px;color:var(--brand);min-height:24px}
+.range-list{list-style:none;padding:0!important;margin:4px 0!important}
+.reason-summary{color:var(--ink)}
+.exact-latest .text-button{margin-left:6px}
+.topbar{min-height:48px;justify-content:flex-end;padding-top:6px;padding-bottom:6px}
+.top-meta{width:auto}
+.nav button:focus-visible,.provider-tabs button:focus-visible,.period-tabs button:focus-visible,.language button:focus-visible,.table-wrap button:focus-visible,.table-wrap:focus-visible,.chart-scroll:focus-visible{outline-offset:-2px}
+.provider-tabs,.nav{padding-top:3px}
+@media(max-width:820px){
+.sidebar{padding-top:10px}
+.nav{margin-top:8px}
+.topbar{position:absolute;top:6px;right:56px;z-index:5;min-height:0;height:auto;width:auto;padding:0;border:0;background:none}
+.language button{min-height:40px;padding:0 10px}
+.side-bottom{top:6px;right:8px}
+.theme-button{min-width:40px;min-height:40px;justify-content:center}
+.theme-button .theme-label{display:none}
+.nav button,.provider-tabs button{min-height:40px}
+.period-tabs button{min-height:40px;min-width:40px;padding:0 4px}
+.text-button,.quiet-button,.fold summary,.source-list summary{min-height:40px}
+.fold summary,.source-list summary{display:flex;align-items:center}
+select,.chart-tools select{height:40px}
+.close-button{height:40px;width:40px}
+.rule-line{padding:0 16px 10px}
+.source-summary{padding:0 16px 16px}
+}
+@media(max-width:640px){
+.page-head{margin-bottom:10px}
+.page-head h1{font-size:20px}
+#desc,#scope-button{display:none!important}
+.provider-tabs{margin:0 0 6px}
+.source-controls{margin:0 0 10px;gap:2px 10px;align-items:center}
+.source-controls label{width:auto;flex:1 1 150px;flex-wrap:nowrap}
+.source-controls .lbl{display:none}
+.source-controls .collected{order:3;flex:1 1 auto}
+.source-controls .text-button{order:4}
+.scope-line{margin-bottom:6px}
+.metric-row{margin-top:8px}
+.main-value{font-size:34px}
+.usage-panel{padding:14px 16px}
+.records-summary+.no-record{margin:0 16px 12px}
+}
+
+/* Browser QA: keep accessible null labels inside their scrolling cells. */
+.na{position:relative;display:inline-block}
+#coverage{color:var(--muted)}
+#coverage.coverage-partial{color:var(--warn)}
+@media(max-width:820px){.nav,.provider-tabs{scrollbar-width:thin}.source-controls .period-tabs{max-width:100%;flex-wrap:wrap}}
+
+.quota-panel{word-break:keep-all}
+
+html[lang="ko"] .panel,html[lang="ko"] .dialog-body{word-break:keep-all;overflow-wrap:anywhere}

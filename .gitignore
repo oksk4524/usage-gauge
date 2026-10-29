@@ -5,3 +5,8 @@ position.txt
 preview.png
 *.flag
 dist/
+
+.test-*.fixture
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

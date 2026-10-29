@@ -1,0 +1,48 @@
+{
+  "checkedAt": "2026-10-29T09:46:09.594Z",
+  "sourcePolicy": "Official first-party assets. Original SVG sources preserved; OpenAI and Claude rasterized with transparent padding normalized for small UI. Other PNG bytes unchanged.",
+  "services": {
+    "codex": {
+      "page": "https://openai.com/brand",
+      "url": "https://cdn.openai.com/brand/openai-logos.zip",
+      "member": "OpenAI-logos/SVGs/OAI_OpenAI-Blossom_White.svg",
+      "lightBackgroundMember": "OpenAI-logos/SVGs/OAI_OpenAI-Blossom_Black.svg",
+      "original": "assets/official-originals/openai-blossom-white.svg",
+      "note": "OpenAI common Blossom symbol used for Codex by owner choice. Rasterized to 256px with 224px symbol bounds; no shape or color modification.",
+      "sha256": "8094ce5b014bafd00986c0dcf487a65ed6e0afd5e65bb99e0bac8f0810242c80",
+      "originalSha256": "01d158767c4eec0e47bd617e67759c33da0accd1438be1a8d29dfdb99ce87285",
+      "lightBackgroundSha256": "a3d1bf581fe78c9de5adaa96ee09c7a7e9608ca233ad28fdc247cec17498890c"
+    },
+    "claude": {
+      "page": "https://claude.ai/",
+      "url": "https://assets-proxy.anthropic.com/claude-ai/v2/assets/v1/cd02a42d9-Vq_H3mgS.svg",
+      "original": "assets/official-originals/claude-symbol.svg",
+      "note": "Official transparent Claude symbol, rasterized to 256px with 224px symbol bounds; no shape or color modification.",
+      "sha256": "0701488aad1b1025d19e543632f6fa8ba2aad74da1e1b46caea101dbbac22362",
+      "originalSha256": "b150888bc7257af83e3b85d3c2be4294f88986026f8168f6c12fc1fde6697350"
+    },
+    "grok": {
+      "page": "https://x.ai/legal/brand-guidelines",
+      "url": "https://data.x.ai/logos/SpaceXAI_Grok_Assets.zip",
+      "member": "SpaceXAI_Grok_Assets/Grok_Logomark_Light.png",
+      "lightBackgroundMember": "SpaceXAI_Grok_Assets/Grok_Logomark_Dark.png",
+      "sha256": "359056ee8983cfa0ba7e72795078c7c0ddf6c5d7a1870401ab960ed4f9df9e53"
+    },
+    "gemini": {
+      "page": "https://gemini.google.com/",
+      "url": "https://www.gstatic.com/lamda/images/gemini_sparkle_4g_512_lt_f94943af3be039176192d.png",
+      "note": "Current icon URL from official Gemini browser tab metadata.",
+      "sha256": "5e7cfecaa53f4f65a313fe89b0f389548126544a78fad8489510c70ae641a4a1"
+    },
+    "antigravity": {
+      "page": "https://antigravity.google/press",
+      "url": "https://antigravity.google/assets/image/brand/antigravity-icon__full-color.png",
+      "sha256": "e0cd08ccd10cd8d08ccf0ba449823ee88495825c0841619618100d3ab089f51e"
+    },
+    "aside": {
+      "page": "https://aside.com/",
+      "url": "https://aside.com/icon.png?icon.0lfc1q-r_ms2e.png",
+      "sha256": "949971a69f8643358bd52875a02a53e60136a88790487c83e42a24cb39f0adea"
+    }
+  }
+}

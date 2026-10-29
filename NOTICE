@@ -3,7 +3,21 @@ Third-party notices
 
 UsageGauge includes the following third-party material.
 
-assets/codex.png, assets/claude.png (rendered from its SVG)
+Current service logo files were obtained directly from first-party sites on 2026-10-29.
+Original sources are preserved. OpenAI and Claude symbols are rasterized from official SVGs,
+with transparent canvas padding normalized for small displays; shapes and colors are unchanged.
+Other service PNGs retain original bytes.
+See assets/service-logos.json for exact URLs and verification time.
+  Codex: https://openai.com/brand (official OpenAI Blossom symbol, black/white variants)
+  Claude: https://claude.ai/ (official transparent symbol SVG)
+  Grok: https://x.ai/legal/brand-guidelines (official logo package, light/dark variants)
+  Gemini: https://gemini.google.com/ (official site icon)
+  Antigravity: https://antigravity.google/press (official full-color icon)
+  Aside: https://aside.com/ (official site icon)
+
+The following historical notices are retained for attribution and source provenance.
+
+Earlier assets/codex.png, assets/claude.png (replaced by the official files above)
   Icons taken from Win-CodexBar (https://github.com/nesszer/Win-CodexBar),
   a Windows port of CodexBar (https://github.com/steipete/CodexBar).
   Usage endpoints and token-refresh parameters were also learned from these projects.
@@ -32,7 +46,7 @@ SOFTWARE.
 
 -------------------------------------------------------------------------------
 
-assets/grok.png, assets/gemini.png, assets/antigravity.png
+Earlier assets/grok.png, assets/gemini.png, assets/antigravity.png (replaced)
   Rendered from SVG icons in lobe-icons (https://github.com/lobehub/lobe-icons).
 
 MIT License
@@ -61,5 +75,6 @@ SOFTWARE.
 
 Codex, ChatGPT and OpenAI are trademarks of OpenAI. Claude and Claude Code are trademarks of
 Anthropic. Grok is a trademark of xAI. Gemini and Antigravity are trademarks of Google.
+Aside is a trademark of Aside Computer Inc.
 The marks are used only to identify each service. This project is not affiliated with or
 endorsed by any of them.
