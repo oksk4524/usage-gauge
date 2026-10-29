@@ -15,29 +15,39 @@
 // that copies old requests into a new file therefore keeps them in the original conversation. (The per-file cache mode
 // picks by processing order instead, i.e. the most recently modified file, which moves requests whenever an old file
 // is touched.)
-const RULES_VERSION='ix-1';
+const RULES_VERSION='ix-2';   // ix-2: keyed ids, cache-write lifetime columns
 module.exports=function makeIndexed(L){
  const {fs,DatabaseSync,FIELDS,newDiag,addDiag,counts,integer,iso,hash,statSig,headOf,inRoot,readLines,readCodex,parseCodex,parseGrok,CACHE_VERSION,APPEND_ONLY,semantics,efficiencyOf}=L;
  const DIMS=['project','session','model','attribution','app'];
- const COLS=['ck','ln','tail','dataset','provider','key','at','day','hour','project','session','model','attribution','app','pname',...FIELDS];
- const INT=new Set(['ln','tail','at','hour',...FIELDS]);
+ const COLS=['ck','ln','tail','dataset','provider','key','at','day','hour','project','session','model','attribution','app','pname','cw5m','cw1h',...FIELDS];
+ const INT=new Set(['ln','tail','at','hour','cw5m','cw1h',...FIELDS]);
  function open(file,timezone){
-  const db=new DatabaseSync(file);
-  db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=NORMAL;PRAGMA temp_store=MEMORY;
-   CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY,v TEXT);
+  const db=new DatabaseSync(file);try{return prepare(db,timezone);}catch(e){try{db.close();}catch{}throw e;}
+ }
+ function prepare(db,timezone){
+  db.exec('PRAGMA journal_mode=WAL;PRAGMA synchronous=NORMAL;PRAGMA temp_store=MEMORY;CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY,v TEXT);');
+  const m0=k=>{const r=db.prepare('SELECT v FROM meta WHERE k=?').get(k);return r?r.v:null;};
+  // days or rules changed: drop and rebuild (columns may differ between rule versions)
+  // the recorded rule version is not trusted alone: an interrupted upgrade may have left old columns behind
+  const colsOf=t=>db.prepare(`PRAGMA table_info(${t})`).all().map(c=>c.name);const exists=t=>!!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t);
+  const stale=['cand','chosen'].some(t=>exists(t)&&!(t==='cand'?COLS:['cw5m','cw1h','dups','conflicts']).every(c=>colsOf(t).includes(c)))||(exists('files')&&!colsOf('files').includes('firstAt'));
+  if(stale||m0('tz')!==timezone||m0('rules')!==RULES_VERSION)db.exec('DROP TABLE IF EXISTS cand;DROP TABLE IF EXISTS files;DROP TABLE IF EXISTS chosen;DROP TABLE IF EXISTS aggcache;');
+  db.exec(`
    CREATE TABLE IF NOT EXISTS files(ck TEXT PRIMARY KEY,version INTEGER,coverageFrom TEXT,sig TEXT,offset INTEGER,headLen INTEGER,headHash TEXT,diag TEXT,datasets TEXT,maxLn INTEGER,firstAt INTEGER);
    CREATE TABLE IF NOT EXISTS cand(${COLS.map(c=>c+(INT.has(c)?' INTEGER':' TEXT')).join(',')});
    CREATE INDEX IF NOT EXISTS cand_ck ON cand(ck);CREATE INDEX IF NOT EXISTS cand_key ON cand(dataset,key);
-   CREATE TABLE IF NOT EXISTS chosen(dataset TEXT,key TEXT,at INTEGER,day TEXT,hour INTEGER,project TEXT,session TEXT,model TEXT,attribution TEXT,app TEXT,${FIELDS.map(k=>k+' INTEGER').join(',')},dups INTEGER,conflicts INTEGER,PRIMARY KEY(dataset,key));
+   CREATE TABLE IF NOT EXISTS chosen(dataset TEXT,key TEXT,at INTEGER,day TEXT,hour INTEGER,project TEXT,session TEXT,model TEXT,attribution TEXT,app TEXT,cw5m INTEGER,cw1h INTEGER,${FIELDS.map(k=>k+' INTEGER').join(',')},dups INTEGER,conflicts INTEGER,PRIMARY KEY(dataset,key));
    CREATE INDEX IF NOT EXISTS chosen_day ON chosen(dataset,day);
    CREATE TABLE IF NOT EXISTS aggcache(dataset TEXT PRIMARY KEY,win TEXT,v TEXT);`);
   const m=k=>{const r=db.prepare('SELECT v FROM meta WHERE k=?').get(k);return r?r.v:null;};
-  if(m('tz')!==timezone||m('rules')!==RULES_VERSION){db.exec('DELETE FROM cand;DELETE FROM files;DELETE FROM chosen;DELETE FROM aggcache;');}   // days or rules changed: rebuild
   const set=db.prepare('INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)');set.run('tz',timezone);set.run('rules',RULES_VERSION);
   return db;
  }
- return async function indexedPass({all,opt,states,get,from,config,start}){
-  const db=open(config.indexPath,opt.timezone);
+ return async function indexedPass(args){const db=open(args.config.indexPath,args.opt.timezone);
+  // whatever happens, the store is rolled back and closed: an open handle would lock the file
+  try{return await pass(db,args);}catch(e){try{if(db.isTransaction)db.exec('ROLLBACK');}catch{}throw e;}finally{try{if(db.isOpen)db.close();}catch{}}
+ };
+ async function pass(db,{all,opt,states,get,from,config,start}){
   const fmt=new Intl.DateTimeFormat('en-CA',{timeZone:opt.timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hourCycle:'h23'});
   const localOf=at=>{const p=Object.fromEntries(fmt.formatToParts(new Date(at)).map(x=>[x.type,x.value]));return [p.year+'-'+p.month+'-'+p.day,Number(p.hour)];};
   db.exec('BEGIN;CREATE TEMP TABLE IF NOT EXISTS seen(ck TEXT PRIMARY KEY);DELETE FROM seen;CREATE TEMP TABLE IF NOT EXISTS aff(dataset TEXT,key TEXT,PRIMARY KEY(dataset,key));DELETE FROM aff;');
@@ -46,7 +56,7 @@ module.exports=function makeIndexed(L){
   const delCk=db.prepare('DELETE FROM cand WHERE ck=?'),delTail=db.prepare('DELETE FROM cand WHERE ck=? AND tail=1'),dsOf=db.prepare('SELECT DISTINCT dataset,provider FROM cand WHERE ck=?');
   const firstOf=db.prepare('SELECT MIN(at) a FROM cand WHERE ck=?'),setDs=db.prepare('UPDATE files SET datasets=? WHERE ck=?');
   const ins=db.prepare(`INSERT INTO cand(${COLS.join(',')}) VALUES(${COLS.map(()=>'?').join(',')})`),affIns=db.prepare('INSERT OR IGNORE INTO aff(dataset,key) VALUES(?,?)');
-  const insert=(ck,ln,tail,r)=>{const [day,hour]=localOf(r.at);ins.run(ck,ln,tail,r.dataset||null,r.provider||null,r.key,r.at,day,hour,r.project||null,r.session||null,r.model||null,r.attribution||null,r.app||null,r.pname||null,...FIELDS.map(k=>r.count[k]));affIns.run(r.dataset||null,r.key);};
+  const insert=(ck,ln,tail,r)=>{const [day,hour]=localOf(r.at);ins.run(ck,ln,tail,r.dataset||null,r.provider||null,r.key,r.at,day,hour,r.project||null,r.session||null,r.model||null,r.attribution||null,r.app||null,r.pname||null,r.cw5m??null,r.cw1h??null,...FIELDS.map(k=>r.count[k]));affIns.run(r.dataset||null,r.key);};
   const markSeen=db.prepare('INSERT OR IGNORE INTO seen(ck) VALUES(?)');
   // a file's start time only moves earlier (pruning old rows must not reshuffle ties)
   const firstAtFor=(ck,prev)=>{const a=firstOf.get(ck).a;return prev!=null&&a!=null?Math.min(prev,a):a??prev??null;};
@@ -100,9 +110,9 @@ module.exports=function makeIndexed(L){
   for(const s of states.values()){if(s.source==='aside_turns')continue;built.set(s.id,buildDataset(db,s,opt,win,touched.includes(s.id)));}
   const names={};for(const r of db.prepare("SELECT project,pname FROM cand WHERE pname IS NOT NULL AND project IS NOT NULL AND project<>'unknown' GROUP BY project").all())names[r.project]=r.pname;
   const touchedKeys=db.prepare('SELECT COUNT(*) n FROM aff').get().n;
-  db.exec('COMMIT');db.close();
+  db.exec('COMMIT');
   return {skipped,built,names,stats:{readFiles,touchedKeys,rebuiltDatasets:touched.length}};
- };
+ }
  // Re-decide only the requests whose candidate rows changed.
  function decide(db,ds){
   const claude=ds==='claude_cli_local',aside=/_aside_local$/.test(ds||'');
@@ -116,7 +126,7 @@ module.exports=function makeIndexed(L){
     b AS (SELECT * FROM r WHERE rn=1),
     t AS (SELECT key,at,day,hour FROM (SELECT c.key,c.at,c.day,c.hour,ROW_NUMBER() OVER (PARTITION BY c.key ORDER BY c.at,c.fa,c.ck,c.ln) rt FROM c JOIN b ON b.key=c.key AND ${same}) WHERE rt=1),
     cf AS (SELECT c.key,SUM(CASE WHEN ${conflict} THEN 1 ELSE 0 END) n FROM c JOIN b ON b.key=c.key GROUP BY c.key)
-   SELECT b.dataset,b.key,t.at,t.day,t.hour,b.project,b.session,b.model,b.attribution,b.app,${FIELDS.map(k=>'b.'+k).join(',')},b.cnt-1,cf.n FROM b JOIN t ON t.key=b.key JOIN cf ON cf.key=b.key`).run(ds);
+   SELECT b.dataset,b.key,t.at,t.day,t.hour,b.project,b.session,b.model,b.attribution,b.app,b.cw5m,b.cw1h,${FIELDS.map(k=>'b.'+k).join(',')},b.cnt-1,cf.n FROM b JOIN t ON t.key=b.key JOIN cf ON cf.key=b.key`).run(ds);
  }
  function heavy(db,id,opt){
   const inWin='dataset=? AND day BETWEEN ? AND ?',P=[id,opt.from,opt.to],sums=FIELDS.map(k=>`SUM(${k}) ${k}`).join(',');
@@ -124,7 +134,7 @@ module.exports=function makeIndexed(L){
   const daily=db.prepare(`SELECT day,${sums} FROM chosen WHERE ${inWin} GROUP BY day`).all(...P).map(r=>{const c={};for(const k of FIELDS)c[k]=integer(r[k]);return [r.day,c];});
   const breakdowns={};for(const dim of DIMS)breakdowns[dim]=db.prepare(`SELECT day,COALESCE(NULLIF(${dim},''),'unknown') gid,${sums} FROM chosen WHERE ${inWin} GROUP BY day,gid ORDER BY day,gid`).all(...P).map(r=>{const t={};for(const k of FIELDS)t[k]=integer(r[k]);return {date:r.day,id:r.gid,label:r.gid==='unknown'?'unknown':dim==='project'?'project '+r.gid:dim==='session'?'session '+r.gid:r.gid,totals:t};});
   const activity=db.prepare(`SELECT day,hour,attribution,SUM(total) tokens,SUM(records) records FROM chosen WHERE ${inWin} GROUP BY day,hour,attribution ORDER BY day,hour,attribution`).all(...P).map(r=>({date:r.day,hour:r.hour,attribution:r.attribution,tokens:integer(r.tokens),records:integer(r.records)}));
-  const kept=[];for(const r of db.prepare(`SELECT session,project,at,attribution,${FIELDS.join(',')} FROM chosen WHERE ${inWin} ORDER BY at,key`).iterate(...P)){const c={};for(const k of FIELDS)c[k]=r[k];kept.push({session:r.session,project:r.project,at:r.at,attribution:r.attribution,count:c});}
+  const kept=[];for(const r of db.prepare(`SELECT session,project,at,attribution,cw5m,cw1h,${FIELDS.join(',')} FROM chosen WHERE ${inWin} ORDER BY at,key`).iterate(...P)){const c={};for(const k of FIELDS)c[k]=r[k];kept.push({session:r.session,project:r.project,at:r.at,attribution:r.attribution,cw5m:r.cw5m,cw1h:r.cw1h,count:c});}
   return {tot:{...Object.fromEntries(FIELDS.map(k=>[k,tot[k]])),latest:tot.latest},daily,breakdowns,activity,kept};
  }
  function buildDataset(db,s,opt,win,dirty){
