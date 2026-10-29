@@ -106,7 +106,7 @@ module.exports=function makeIndexed(L){
   if(!db.prepare('SELECT 1 FROM chosen LIMIT 1').get())db.exec('INSERT OR IGNORE INTO aff(dataset,key) SELECT DISTINCT dataset,key FROM cand');
   const touched=db.prepare('SELECT DISTINCT dataset FROM aff').all().map(r=>r.dataset);
   for(const ds of touched)decide(db,ds);
-  const win=opt.from+'|'+opt.to,built=new Map();
+  const win=opt.from+'|'+opt.to+'|e2',built=new Map();   // e2: efficiency counts model switches
   for(const s of states.values()){if(s.source==='aside_turns')continue;built.set(s.id,buildDataset(db,s,opt,win,touched.includes(s.id)));}
   const names={};for(const r of db.prepare("SELECT project,pname FROM cand WHERE pname IS NOT NULL AND project IS NOT NULL AND project<>'unknown' GROUP BY project").all())names[r.project]=r.pname;
   const touchedKeys=db.prepare('SELECT COUNT(*) n FROM aff').get().n;
@@ -134,7 +134,7 @@ module.exports=function makeIndexed(L){
   const daily=db.prepare(`SELECT day,${sums} FROM chosen WHERE ${inWin} GROUP BY day`).all(...P).map(r=>{const c={};for(const k of FIELDS)c[k]=integer(r[k]);return [r.day,c];});
   const breakdowns={};for(const dim of DIMS)breakdowns[dim]=db.prepare(`SELECT day,COALESCE(NULLIF(${dim},''),'unknown') gid,${sums} FROM chosen WHERE ${inWin} GROUP BY day,gid ORDER BY day,gid`).all(...P).map(r=>{const t={};for(const k of FIELDS)t[k]=integer(r[k]);return {date:r.day,id:r.gid,label:r.gid==='unknown'?'unknown':dim==='project'?'project '+r.gid:dim==='session'?'session '+r.gid:r.gid,totals:t};});
   const activity=db.prepare(`SELECT day,hour,attribution,SUM(total) tokens,SUM(records) records FROM chosen WHERE ${inWin} GROUP BY day,hour,attribution ORDER BY day,hour,attribution`).all(...P).map(r=>({date:r.day,hour:r.hour,attribution:r.attribution,tokens:integer(r.tokens),records:integer(r.records)}));
-  const kept=[];for(const r of db.prepare(`SELECT session,project,at,attribution,cw5m,cw1h,${FIELDS.join(',')} FROM chosen WHERE ${inWin} ORDER BY at,key`).iterate(...P)){const c={};for(const k of FIELDS)c[k]=r[k];kept.push({session:r.session,project:r.project,at:r.at,attribution:r.attribution,cw5m:r.cw5m,cw1h:r.cw1h,count:c});}
+  const kept=[];for(const r of db.prepare(`SELECT session,project,model,at,attribution,cw5m,cw1h,${FIELDS.join(',')} FROM chosen WHERE ${inWin} ORDER BY at,key`).iterate(...P)){const c={};for(const k of FIELDS)c[k]=r[k];kept.push({session:r.session,project:r.project,model:r.model,at:r.at,attribution:r.attribution,cw5m:r.cw5m,cw1h:r.cw1h,count:c});}
   return {tot:{...Object.fromEntries(FIELDS.map(k=>[k,tot[k]])),latest:tot.latest},daily,breakdowns,activity,kept};
  }
  function buildDataset(db,s,opt,win,dirty){

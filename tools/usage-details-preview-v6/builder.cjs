@@ -18,6 +18,7 @@ function build(base, input) {
   for (const d of S.datasets) for (const row of d.breakdowns?.app || []) { row.id = APPS.has(String(row.id)) ? String(row.id) : 'unknown'; row.label = row.id; }
   // Real folder names are for the owner's own page only (never in the snapshot): opaque key -> short plain name.
   if (S.localNames !== undefined) { const ok = {}; if (S.localNames && typeof S.localNames === 'object') for (const [k, v] of Object.entries(S.localNames)) if (/^[a-f0-9]{16}$/.test(k) && typeof v === 'string' && /^[^\u0000-\u001f<>"|?*]{1,80}$/.test(v)) ok[k] = v; S.localNames = ok; }
+  { const a = S.localAside; S.localAside = a && typeof a === 'object' && Number.isFinite(a.thresholdPercent) && a.thresholdPercent > 0 && a.thresholdPercent <= 100 ? { enabled: a.enabled !== false, thresholdPercent: Math.round(a.thresholdPercent) } : null; }
   S.localHelpers = Array.isArray(S.localHelpers) ? S.localHelpers.filter(x => typeof x === 'string' && /^[a-f0-9]{16}$/.test(x)).slice(0, 200) : [];
   for (const d of S.datasets) for (const dim of ['project','session','model','attribution']) {
     for (const row of d.breakdowns?.[dim] || []) {

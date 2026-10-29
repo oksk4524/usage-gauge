@@ -15,6 +15,8 @@ function writeAtomic(file,text){const tmp=file+'.tmp-'+process.pid;try{fs.writeF
 // one run at a time; a lock older than 20 minutes is from a run that died
 function lock(){try{fs.writeFileSync(LOCK,String(process.pid),{flag:'wx'});return true;}catch(e){if(e.code!=='EEXIST')throw e;try{if(Date.now()-fs.statSync(LOCK).mtimeMs>20*60e3){fs.unlinkSync(LOCK);fs.writeFileSync(LOCK,String(process.pid),{flag:'wx'});return true;}}catch{}return false;}}
 
+// Aside's compaction point: when a conversation is summarized (percent of the model's context window). Read-only; nothing else is kept.
+function asideCompaction(){try{const s=JSON.parse(fs.readFileSync(path.join(os.homedir(),'.aside','u','0','settings.json'),'utf8')),c=s&&s.compaction;if(!c||typeof c!=='object')return null;return {enabled:c.enabled!==false,thresholdPercent:Number(c.thresholdPercent)};}catch{return null;}}
 async function main(){
  fs.mkdirSync(DATA,{recursive:true});
  if(!lock()){log({ok:false,reason:'already_running'});return;}
@@ -42,7 +44,7 @@ async function main(){
       try{for(const s of db.prepare('SELECT id,title,parent_id FROM sessions WHERE incognito IS NOT 1').all()){const h=crypto.createHmac('sha256',key).update(String(s.id)).digest('hex').slice(0,16);if(want.has(h)&&s.parent_id)helpers.push(h);
         if(want.has(h)&&typeof s.title==='string'){const tt=s.title.replace(/[\u0000-\u001f<>"|?*]/g,' ').replace(/\s+/g,' ').trim().slice(0,80);if(tt)names[h]=tt;}}}finally{db.close();}}}catch{}writeAtomic(path.join(DATA,'local-names.json'),JSON.stringify({purpose:'this_pc_dashboard_only',names}));
   for(const k of Object.keys(names))if(typeof names[k]==='string')names[k]=names[k].replace(/[\u00b7\u318d\u2022]/g,'\u2219');
-  const page=build(fs.readFileSync(path.join(APP,'tools','usage-details-preview-v6','template.html'),'utf8'),{...snap,localNames:names,localHelpers:helpers});
+  const page=build(fs.readFileSync(path.join(APP,'tools','usage-details-preview-v6','template.html'),'utf8'),{...snap,localNames:names,localHelpers:helpers,localAside:asideCompaction()});
   writeAtomic(path.join(DASH,'usage-gauge.html'),page);
   const partial=snap.datasets.filter(d=>d.coverage&&d.coverage.status==='partial'&&(d.coverage.issues||[]).includes('scan_limit_reached')).length;
   log({ok:true,ms:Date.now()-t0,bytesRead:local.audit.bytesRead,skippedByBudget:local.audit.filesSkippedByBudget||0,stoppedSources:partial});
