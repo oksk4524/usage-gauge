@@ -268,6 +268,47 @@ img[data-logo="grok"]{filter:none!important}.logo-dark{display:none}html[data-th
 
 /* status colour only for real warnings: "partial" is information (today is always partial) */
 .partial-chip{border-color:var(--line);color:var(--muted)}
+/* ===== Plum palette (2026-10-30): one accent, neutrals with a trace of plum, data tones tuned to sit next to it ===== */
+:root{--canvas:#ffffff;--paper:#ffffff;--ink:#1d1a21;--muted:#5c5864;--line:#ece9ef;--soft:#f6f4f7;--brand:#8a4a7c;--brand-soft:#f3e8f0;--track:#f1eef3;--bar:#c48fb8;
+ --plum-1:#5b2a51;--plum-2:#8a4a7c;--plum-3:#c48fb8;--slate-1:#2f3b57;--slate-2:#55658a;--slate-3:#9eabc8;--sand-1:#7a6f66;--sand-2:#a39a92;--sand-3:#d2cbc4;--peri-1:#3f56b8;--peri-2:#6f84d9;--peri-3:#aebcef}
+html[data-theme=dark]{--canvas:#17151a;--paper:#1e1b22;--ink:#efecf2;--muted:#b3adb9;--line:#34303a;--soft:#27232b;--brand:#d3a6c7;--brand-soft:#3a2a37;--track:#2f2a33;--bar:#a7709a;
+ --plum-1:#e7c3dc;--plum-2:#c48fb8;--plum-3:#7b4a6f;--slate-1:#c9d3ea;--slate-2:#9eabc8;--slate-3:#4c5878;--sand-1:#e3ddd7;--sand-2:#bdb4ab;--sand-3:#6b625b;--peri-1:#ced7fb;--peri-2:#aebcef;--peri-3:#4d5fae}
+.sidebar{background:var(--soft)}
+/* top section: on the floor, one ink rule per section, no boxes */
+body .today{gap:30px}
+body .today-head{color:var(--ink);font-size:13px;font-weight:700;margin:0 0 10px}
+body .today-head span{color:var(--muted);font-weight:400}
+body .today-rows,body .today-none{border:0;border-top:1px solid var(--ink);border-radius:0;background:none}
+body .today-rows li{padding:12px 0;border-bottom:1px solid var(--line)}
+body .today-rows li+li{border-top:0}
+body .today-row-title{font-size:15px}
+body .today-row-title .num{color:var(--brand)}
+body .today-rows .today-act{color:var(--ink)}
+body .today-rows .today-act:after{content:" \2192"}
+body .today-none{padding:12px 0;border-bottom:1px solid var(--line)}
+body .week-caption{margin:-12px 0 10px;font-size:12px;color:var(--muted)}
+body .week-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px 44px}
+body .week-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--ink)}
+body .week-list li{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:5px 10px;align-items:center;padding:9px 0 10px;border-bottom:1px solid var(--line)}
+body .week-rank{font-size:12px;color:var(--muted)}
+body .week-name{font-size:14px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+body .week-name small{font-weight:400;font-size:12px;color:var(--muted);margin-left:6px}
+body .week-value{font-weight:700;white-space:nowrap}
+body .week-bar{grid-column:2/4;height:6px;border-radius:3px;background:var(--track)}
+body .week-bar i{display:block;height:100%;border-radius:3px}
+/* curved gradient: deepest at the bar's end, softening toward its start */
+body .tone-plum{background:radial-gradient(140% 260% at 100% 50%,var(--plum-1) 0%,var(--plum-2) 45%,var(--plum-3) 100%)}
+body .tone-slate{background:radial-gradient(140% 260% at 100% 50%,var(--slate-1) 0%,var(--slate-2) 45%,var(--slate-3) 100%)}
+body .tone-sand{background:radial-gradient(140% 260% at 100% 50%,var(--sand-1) 0%,var(--sand-2) 45%,var(--sand-3) 100%)}
+body .tone-peri{background:radial-gradient(140% 260% at 100% 50%,var(--peri-1) 0%,var(--peri-2) 45%,var(--peri-3) 100%)}
+body .week-note{grid-column:2/4;font-size:12px;color:var(--muted);margin-top:-1px}
+body .today-trend{display:flex;flex-wrap:wrap;gap:12px 40px;border-top:1px solid var(--ink);padding-top:12px}
+body .today-trend-item{padding:0;border:0;background:none}
+body .today-trend-item strong{font-size:20px;letter-spacing:-.02em}
+body .today-change{color:var(--brand);font-weight:700}
+body .today-habit{margin-top:12px}
+body .today-detail-head{margin-top:8px}
+body .week-title{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--muted)}
 /* Mobile vertical scrollbar: native scrolling, quiet track, system high-contrast untouched. */
 @media (max-width:820px) and (forced-colors:none){
   html{--scroll-thumb:#8993a1;--scroll-thumb-hover:#697687}
@@ -390,3 +431,4 @@ img[data-logo="grok"]{filter:none!important}.logo-dark{display:none}html[data-th
 .today-trend-item strong{font-size:16px}
 .today-habit{margin:8px 0 0;font-size:12px;color:var(--muted);line-height:1.6}
 @media (max-width:560px){.today-rows li{padding:10px 12px}.today-rows .today-act{white-space:normal}}
+
