@@ -198,7 +198,8 @@ module.exports = function usageGaugeApp(S, logos, notices, C) {
     const trendHTML=trend.map(x=>{let ch;if(!x.before||x.now/x.before>=20)ch=t('크게 늘었어요','sharply up');else{const r=x.now/x.before;ch=r>=1.5?t(r.toFixed(1)+'배',r.toFixed(1)+'x'):(r>=1?'+':'')+Math.round((r-1)*100)+'%';}
       return '<div class="today-trend-item"><strong class="num">'+compact(x.now)+'</strong> <span class="today-change">'+ch+'</span><span class="today-trend-name">'+esc(srcName(x.d))+(x.before!=null?t(' / 지난주 ',' / last week ')+compact(x.before):'')+'</span></div>';}).join('');
     const hb=habits();
-    return (lims.length?'<div class="today-block"><h2 class="today-head">'+t('지금 쓸 수 있는 것','Available now')+(age!=null&&age>=120?'<span>'+t(gapText(age)+' 전 값',gapText(age)+' old')+'</span>':'')+'</h2><div class="today-strip">'+lims.map(chip).join('')+'</div></div>':'')
+    // limits are on the taskbar widget all the time; the per-service details below keep reset times and accounts
+    return ''
       +'<div class="today-block"><h2 class="today-head">'+t('지금 할 일','What to do now')+'</h2>'+rows+'</div>'
       +((trendHTML||hb.length)?'<div class="today-block"><h2 class="today-head">'+t('이번 주 흐름','This week')+'<span>'+t('지난 7일과 그 전 7일, 출처끼리 더하지 않음','last 7 days vs the 7 before, sources not added')+'</span></h2>'+(trendHTML?'<div class="today-trend">'+trendHTML+'</div>':'')+(hb.length?'<p class="today-habit">'+t('최근 30일 습관: ','Last 30 days: ')+hb.map(esc).join(t(', ','; '))+'</p>':'')+'</div>':'')
       +'<h2 class="today-detail-head">'+t('서비스별 자세히','By service')+'</h2>';}
