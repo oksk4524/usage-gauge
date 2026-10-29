@@ -95,7 +95,7 @@ module.exports = async function({assert, fs, vm, core, build, sampleBase}) {
   E.clk({provider:'claude'});E.clk({view:'overview'});v=E.view();
   assert.ok(v.includes('quota-value num warning')&&!v.includes('5% 이하')&&v.includes('class="track warning"'));
   assert.ok(!v.includes('잔여 한도가 적어요')&&!v.includes('실시간 상태나 예측은 아니에요')&&!v.includes('확인:'),'v5: caption prose and exact times are not on the first screen');
-  E.clk({usage:'1'});{const db=E.nn('#dialog-body').innerHTML;assert.ok(db.includes('실시간 상태나 예측은 아니에요')&&db.includes('5% 이하 강조는 이 시안의 표시 기준이에요')&&/확인: [^<]*경과/.test(db)&&db.includes('초기화: ')&&db.includes('남은 한도'),'v5: exact checked/reset in details');}E.clk({},'dialog-close');
+  E.clk({usage:'1'});{const db=E.nn('#dialog-body').innerHTML;assert.ok(db.includes('실시간 상태나 예측이 아니고')&&db.includes('5% 이하로 남으면 강조해서 보여 줘요')&&/확인: [^<]*경과/.test(db)&&db.includes('초기화: ')&&db.includes('남은 한도'),'v5: exact checked/reset in details');}E.clk({},'dialog-close');
   assert.equal((v.match(/class="quota-row"/g)||[]).length,2);
   assert.ok(v.includes('남은 한도')&&/저장된 값 \/ [^<]*경과/.test(v));
   assert.ok(!v.includes('누락 날짜')&&!v.includes('계정 한도와 크레딧'));
@@ -108,7 +108,7 @@ module.exports = async function({assert, fs, vm, core, build, sampleBase}) {
   E.clk({usage:'1'});assert.ok(E.nn('#dialog-body').innerHTML.includes('data-view="sources"')&&E.nn('#dialog-body').innerHTML.includes('출처 3개'));E.clk({},'dialog-close');
   E.clk({view:'sources'});v=E.view();
   assert.equal((v.match(/<td class="date">/g)||[]).length,3);
-  assert.ok(v.includes('전체 출처 목록 3개')&&v.includes('기록의 기준 시각')&&v.includes('스냅샷 파일 생성'));
+  assert.ok(v.includes('전체 출처 목록 3개')&&v.includes('기록의 기준 시각')&&v.includes('기록 파일을 만든 시각'));
   assert.equal(E.nn('#freshness').hidden,true);assert.equal(E.nn('#breadcrumb').hidden,true);
   // --- dialog: reason count first, gaps grouped into ranges, label rename
   E.clk({},'scope-button');let body=E.nn('#dialog-body').innerHTML;
@@ -126,10 +126,10 @@ module.exports = async function({assert, fs, vm, core, build, sampleBase}) {
   // --- insights: peak + breakdown first, hourly table folded, notices folded but kept
   const withAct=mkD('a','claude','claude_cli',days30,{activity:[{date:'2026-10-28',hour:3,tokens:9,records:1},{date:'2026-10-28',hour:14,tokens:50,records:2}],breakdowns:{project:[],session:[],attribution:[],model:[{date:'2026-10-28',id:'m',label:'claude-sonnet-x',totals:{total:5}}]}});
   const I=env({...S2,datasets:[withAct]});I.clk({view:'insights'});v=I.view();
-  assert.ok(v.indexOf('토큰이 가장 많이 기록된 날')<v.indexOf('사용량 분류'));
+  assert.ok(v.indexOf('전체 토큰이 가장 많았던 날')<v.indexOf('사용량 분류'));
   assert.ok(v.indexOf('사용량 분류')<v.indexOf('시간대별 토큰 이벤트'));
   assert.ok(/<option value="model" selected>/.test(v));
-  assert.ok(v.includes('토큰이 가장 많이 기록된 시간대')&&/<details class="fold"><summary>시간대별 표 보기/.test(v));
+  assert.ok(v.includes('전체 토큰이 가장 많았던 시간대')&&/<details class="fold"><summary>시간대별 표 보기/.test(v));
   assert.ok(v.includes('비교할 수 없어요')&&v.includes('<summary>이유 보기</summary>'));
   assert.ok(v.includes('<summary>추정하지 않는 정보</summary>')&&v.includes('성과와 생산성'));
   assert.ok(v.includes('근무 시간이나 실제 활동 시간이 아니에요'));

@@ -94,7 +94,7 @@ module.exports = async function({assert, fs, vm, core, build, sampleBase}) {
     assert.ok(/초기화 [^<]+/.test(panel),'short reset time when known');
     assert.ok(!panel.includes('확인:')&&!panel.includes('2026'),'exact timestamps and year are not on the first screen');
     e.clk({usage:'1'});const b=e.body();
-    assert.ok(/확인: [^<]*2026[^<]*경과/.test(b)&&b.includes('초기화: ')&&b.includes('출처: test_probe')&&b.includes('저장된 값이며 실시간 상태나 예측은 아니에요'));e.clk({},'dialog-close');
+    assert.ok(/확인: [^<]*2026[^<]*경과/.test(b)&&b.includes('초기화: ')&&b.includes('출처: test_probe')&&b.includes('실시간 상태나 예측이 아니고'));e.clk({},'dialog-close');
     // no limit for the service: one line only
     const e2=env({host:700});e2.clk({provider:'codex'});v=e2.view();const p2=v.slice(v.indexOf('id="quota-panel"'));
     assert.ok(p2.includes('한도 미확인')&&!p2.includes('quota-row')&&!p2.includes('track')&&!p2.includes('저장된 값'));

@@ -43,7 +43,7 @@ function click(dataset={},id=''){listeners.click({target:{closest(){return {data
 click({lang:'en'});
 assert.equal(document.documentElement.lang,'en');
 assert.ok(!node('#view').innerHTML.includes('Latest recorded day'),'v5: overview has no exact/latest lines');click({usage:'1'});assert.equal(node('#detail-dialog').open,true);assert.ok(node('#dialog-body').innerHTML.includes('Latest recorded day')&&node('#dialog-body').innerHTML.includes('Exact total'),'v5: exact values live in usage details');click({},'dialog-close');
-click({view:'insights'});assert.ok(node('#view').innerHTML.includes('Unknown attribution')||node('#view').innerHTML.includes('Unknown attribution is not guessed'));
+click({view:'insights'});assert.ok(node('#view').innerHTML.includes('unknown origin is not guessed'));
 assert.ok(node('#view').innerHTML.includes('140'));
 click({view:'ai'});assert.ok(node('#view').innerHTML.includes('cloud AI'));
 click({view:'sources'});assert.ok(node('#view').innerHTML.includes('Latest complete date'));
