@@ -367,3 +367,26 @@ img[data-logo="grok"]{filter:none!important}.logo-dark{display:none}html[data-th
 .today-trend-name{display:block;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
 .today-detail-head{margin:4px 0 -8px;font-size:13px;font-weight:600;color:var(--muted)}
 @media (max-width:560px){.today-item{padding:14px;gap:12px}.today-title{font-size:16px}.today-lim{grid-template-columns:minmax(0,1fr) 44px;gap:4px 10px}.today-lim .track{grid-column:1/-1;grid-row:2}}
+
+/* "What to do now" v2: compact */
+.today{gap:18px}
+.today-strip{display:flex;flex-wrap:wrap;gap:6px}
+.today-chip{display:inline-flex;align-items:baseline;gap:5px;padding:5px 10px;border:1px solid var(--line);border-radius:999px;background:var(--paper);font-size:13px;white-space:nowrap}
+.today-chip b{font-weight:700}
+.today-chip small{font-size:12px;color:var(--muted)}
+.today-chip.low b{color:var(--danger)}
+.today-chip.out{color:var(--danger);border-color:var(--danger)}
+.today-chip.out small{color:var(--danger)}
+.today-rows{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:var(--radius);background:var(--paper)}
+.today-rows li{padding:10px 16px}
+.today-rows li+li{border-top:1px solid var(--line)}
+.today-row-main{display:flex;justify-content:space-between;align-items:baseline;gap:6px 16px;flex-wrap:wrap}
+.today-row-title{font-size:14px;font-weight:700;overflow-wrap:anywhere}
+.today-row-title .num{font-weight:600;color:var(--muted)}
+.today-rows .today-why{margin:2px 0 0;font-size:12px}
+.today-rows .today-act{margin:0;font-size:13px;white-space:nowrap}
+.today-none{padding:10px 16px}
+.today-trend-item{padding:10px 14px}
+.today-trend-item strong{font-size:16px}
+.today-habit{margin:8px 0 0;font-size:12px;color:var(--muted);line-height:1.6}
+@media (max-width:560px){.today-rows li{padding:10px 12px}.today-rows .today-act{white-space:normal}}

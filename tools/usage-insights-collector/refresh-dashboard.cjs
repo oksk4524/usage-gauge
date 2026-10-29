@@ -33,8 +33,15 @@ async function main(){
   if(/"(?:content|email|authorization|access_token|refresh_token|password|cwd|filePath)"\s*:/i.test(json))throw Error('sensitive_field_in_snapshot');
   writeAtomic(path.join(DATA,'snapshot.json'),json);
   // real folder names stay on this PC: written beside the page, never into the snapshot
-  const names=local.localNames||{};writeAtomic(path.join(DATA,'local-names.json'),JSON.stringify({purpose:'this_pc_dashboard_only',names}));
-  const page=build(fs.readFileSync(path.join(APP,'tools','usage-details-preview-v6','template.html'),'utf8'),{...snap,localNames:names});
+  const names={...(local.localNames||{})};
+  // titles of Aside conversations listed as "in use" (the dashboard names them so they can be acted on); hashed ids only match on this PC
+  const helpers=[];
+  try{const want=new Set();for(const d of local.datasets)for(const x of (d.efficiency&&d.efficiency.recentSessions)||[])want.add(x.session);
+    if(want.size){const {DatabaseSync}=require('node:sqlite'),crypto=require('node:crypto'),key=c.loadIdKey(path.join(HOME,'collector-id-key'));
+      const db=new DatabaseSync(path.join(os.homedir(),'.aside','u','0','state.db'),{readOnly:true});
+      try{for(const s of db.prepare('SELECT id,title,parent_id FROM sessions WHERE incognito IS NOT 1').all()){const h=crypto.createHmac('sha256',key).update(String(s.id)).digest('hex').slice(0,16);if(want.has(h)&&s.parent_id)helpers.push(h);
+        if(want.has(h)&&typeof s.title==='string'){const tt=s.title.replace(/[\u0000-\u001f<>"|?*]/g,' ').replace(/\s+/g,' ').trim().slice(0,80);if(tt)names[h]=tt;}}}finally{db.close();}}}catch{}writeAtomic(path.join(DATA,'local-names.json'),JSON.stringify({purpose:'this_pc_dashboard_only',names}));
+  const page=build(fs.readFileSync(path.join(APP,'tools','usage-details-preview-v6','template.html'),'utf8'),{...snap,localNames:names,localHelpers:helpers});
   writeAtomic(path.join(DASH,'usage-gauge.html'),page);
   const partial=snap.datasets.filter(d=>d.coverage&&d.coverage.status==='partial'&&(d.coverage.issues||[]).includes('scan_limit_reached')).length;
   log({ok:true,ms:Date.now()-t0,bytesRead:local.audit.bytesRead,skippedByBudget:local.audit.filesSkippedByBudget||0,stoppedSources:partial});
