@@ -59,6 +59,21 @@ public static class AuthReadOnlyTests {
   Check(Usage.Hash("secret-a")!=Usage.Hash("secret-b")&&!Usage.Hash("secret-a").Contains("secret"),"token_hash_is_one_way_and_distinct");
   // Claude credential file: expiry is read, token file still untouched
   File.WriteAllText(file,"{\"claudeAiOauth\":{\"accessToken\":\"synthetic\",\"expiresAt\":1000}}");var lg=Usage.ReadClaude(file);Check(lg.ExpiresUtc.HasValue&&lg.ExpiresUtc.Value.Year==1970,"claude_expiry_read");
+  // dashboard feed: bounded, masked, only when the dashboard exists
+  {var qs=new Quota[5];var reset=new DateTime(2026,11,4,6,0,0,DateTimeKind.Utc);
+   qs[0]=Usage.Tag(new Quota{Name="Codex",Ok=true,Remaining=40,LastOkUtc=DateTime.UtcNow},"someone@example.com","codex:acct-1",Usage.Hash("synthetic-access-codex"));qs[0].Windows.Add(new UsageWindow{Key="primary_window",Used=60,Seconds=604800,Reset=reset});
+   qs[1]=Usage.Tag(new Quota{Name="Claude",Ok=true,Remaining=98,LastOkUtc=DateTime.UtcNow},"other@example.org","claude:uuid-1",Usage.Hash("synthetic-access-claude"));qs[1].Windows.Add(new UsageWindow{Key="seven_day",Used=2,Reset=reset});qs[1].Windows.Add(new UsageWindow{Key="five_hour",Used=7,Reset=reset});
+   qs[2]=new Quota{Name="Grok",Error="Grok login not found"};qs[3]=new Quota{Name="Gemini"};qs[4]=new Quota{Name="3p"};
+   string feedDir=Path.Combine(Log.Dir,"dashboard","data");if(Directory.Exists(feedDir))Directory.Delete(feedDir,true);
+   DashboardFeed.Write(qs);Check(!Directory.Exists(feedDir),"feed_never_creates_the_dashboard_folder");
+   Directory.CreateDirectory(feedDir);string lf=Path.Combine(feedDir,"limits.jsonl");long size=-1;bool steady=true;
+   for(int k=0;k<50;k++){qs[0].LastOkUtc=DateTime.UtcNow.AddSeconds(k);qs[0].Windows[0].Used=k;DashboardFeed.Write(qs);long now2=new FileInfo(lf).Length;if(size>=0&&Math.Abs(now2-size)>4)steady=false;size=now2;}
+   string text=File.ReadAllText(lf);string[] lines=text.Trim().Split('\n');
+   Check(lines.Length==3&&steady&&size<4096,"feed_is_overwritten_not_appended");
+   Check(!text.Contains("synthetic-access")&&!text.Contains("someone@")&&!text.Contains("other@")&&text.Contains("so***@example.com")&&text.Contains("ot***@example.org"),"feed_has_masked_labels_and_no_tokens");
+   Check(!text.Contains("acct-1")&&!text.Contains("uuid-1"),"feed_account_ids_are_one_way");
+   Check(text.Contains("\"five_hour\"")&&text.Contains("\"seven_day\"")&&text.Contains("\"window_seconds\":604800")&&lines[2].Contains("\"status\":\"unavailable\""),"feed_keeps_every_window_and_marks_failures");
+   Check(Directory.GetFiles(feedDir).Length==1,"feed_leaves_no_temp_files");}
   Console.WriteLine("RESULT "+passed+" passed; real credentials and public APIs untouched");return 0;
  }catch(Exception e){Console.Error.WriteLine(e.GetType().Name+": "+e.Message);return 1;}finally{if(File.Exists(file)){File.SetAttributes(file,FileAttributes.Normal);File.Delete(file);}}}
 }

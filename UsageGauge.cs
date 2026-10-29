@@ -39,6 +39,130 @@ class Quota
     public string Account, AccountKey, CredKey;
     public string Extra;            // other limit windows, tooltip only
     public DateTime AccountChangedUtc;
+    public List<UsageWindow> Windows = new List<UsageWindow>();   // every limit window of this reading (dashboard feed)
+}
+
+class UsageWindow
+{
+    public string Key;              // the service's own window name (primary_window, five_hour, seven_day, ...)
+    public double Used;             // percent used, 0..100
+    public double Seconds = double.NaN;
+    public DateTime? Reset;         // UTC
+}
+
+// Hands the widget's latest readings to the local dashboard (tools\usage-insights-collector\refresh-dashboard.cjs),
+// so its "remaining limits" are as fresh as the widget instead of a one-off saved probe.
+// - only when the dashboard is set up (its data folder exists); never creates it
+// - both files are overwritten whole: one line per service, so they cannot grow
+// - masked account label and a one-way account key only; no tokens, no emails, no raw responses
+static class DashboardFeed
+{
+    static string lastLimits, lastAg;
+    static List<Dictionary<string, object>> agBuckets; static DateTime agAtUtc;
+    static readonly System.Web.Script.Serialization.JavaScriptSerializer J = new System.Web.Script.Serialization.JavaScriptSerializer();
+    internal static string DataDir() { return Path.Combine(Log.Dir, "dashboard", "data"); }
+
+    internal static void RememberAntigravity(Dictionary<string, Dictionary<string, object>> buckets)
+    {
+        var list = new List<Dictionary<string, object>>();
+        foreach (var kv in buckets)
+        {
+            if (list.Count >= 16) break;
+            object rf, w, rt; double frac;
+            if (!kv.Value.TryGetValue("remaining_fraction", out rf) || rf == null) continue;
+            try { frac = Convert.ToDouble(rf, CultureInfo.InvariantCulture); } catch { continue; }
+            if (double.IsNaN(frac)) continue;
+            var b = new Dictionary<string, object>();
+            b["id"] = kv.Key.Length > 64 ? kv.Key.Substring(0, 64) : kv.Key;
+            b["window"] = kv.Value.TryGetValue("window", out w) && w != null && w.ToString() == "weekly" ? "weekly" : "unknown";
+            b["remaining_percent"] = Math.Max(0, Math.Min(100, frac * 100));
+            DateTime? reset = kv.Value.TryGetValue("reset_time", out rt) && rt != null ? Usage.ParseTime(rt) : null;
+            if (reset.HasValue) b["reset_iso"] = reset.Value.ToString("o", CultureInfo.InvariantCulture);
+            list.Add(b);
+        }
+        lock (J) { agBuckets = list; agAtUtc = DateTime.UtcNow; }
+    }
+
+    internal static string LimitsText(Quota[] qs)
+    {
+        var sb = new StringBuilder();
+        string[] services = { "Codex", "Claude", "Grok" };
+        for (int i = 0; i < 3 && i < qs.Length; i++)
+        {
+            var q = qs[i]; if (q == null) continue;
+            var row = new Dictionary<string, object>();
+            row["service"] = services[i];
+            if (!q.Ok || q.Windows == null || q.Windows.Count == 0)
+            {
+                if (q.Error == null && !q.Ok) continue;   // not polled yet (not set up on this PC)
+                row["capturedAt"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture); row["status"] = "unavailable";
+            }
+            else
+            {
+                row["capturedAt"] = q.LastOkUtc.ToString("o", CultureInfo.InvariantCulture);
+                row["status"] = "ok";
+                row["source"] = "widget";
+                var data = new Dictionary<string, object>();
+                foreach (var w in q.Windows)
+                {
+                    if (w == null || w.Key == null || double.IsNaN(w.Used)) continue;
+                    double used = Math.Max(0, Math.Min(100, w.Used));
+                    if (i == 2) { data["used_percent"] = used; if (w.Reset.HasValue) data["reset_iso"] = w.Reset.Value.ToString("o", CultureInfo.InvariantCulture); break; }
+                    var d = new Dictionary<string, object>(); d["used_percent"] = used;
+                    if (i == 0)
+                    {
+                        if (!double.IsNaN(w.Seconds)) d["window_seconds"] = w.Seconds;
+                        if (w.Reset.HasValue) d["reset_at"] = (long)(w.Reset.Value - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
+                    }
+                    else if (w.Reset.HasValue) d["reset_iso"] = w.Reset.Value.ToString("o", CultureInfo.InvariantCulture);
+                    data[w.Key] = d;
+                }
+                row["data"] = data;
+                row["account"] = q.AccountKey == null ? null : new Dictionary<string, object> { { "key", Usage.Hash(q.AccountKey) }, { "label", Mask(q.Account) } };
+            }
+            sb.Append(J.Serialize(row)).Append('\n');
+        }
+        return sb.ToString();
+    }
+    internal static string AntigravityText()
+    {
+        lock (J)
+        {
+            if (agBuckets == null) return null;
+            var row = new Dictionary<string, object> { { "service", "Antigravity" }, { "status", "ok" }, { "source", "widget" }, { "capturedAt", agAtUtc.ToString("o", CultureInfo.InvariantCulture) }, { "usage_buckets", agBuckets } };
+            return J.Serialize(row) + "\n";
+        }
+    }
+    // "ab***@example.com": two characters and the domain, nothing else
+    internal static string Mask(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return null; s = s.Trim();
+        int at = s.IndexOf('@'); string head = at > 0 ? s.Substring(0, at) : s;
+        head = head.Substring(0, Math.Min(2, head.Length)).Replace("*", "").Replace("@", "");
+        if (head.Length == 0 || head.IndexOfAny(new[] { ' ', '\t' }) >= 0) return null;
+        string dom = at > 0 ? s.Substring(at) : "";
+        if (dom.Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(dom, "^@[A-Za-z0-9.-]{1,100}$")) dom = "";
+        return head + "***" + dom;
+    }
+    public static void Write(Quota[] qs)
+    {
+        try
+        {
+            string dir = DataDir();
+            if (!Directory.Exists(dir)) return;
+            string limits = LimitsText(qs), ag = AntigravityText();
+            if (limits.Length > 0 && limits != lastLimits) { Replace(Path.Combine(dir, "limits.jsonl"), limits); lastLimits = limits; }
+            if (ag != null && ag != lastAg) { Replace(Path.Combine(dir, "antigravity-limits.jsonl"), ag); lastAg = ag; }
+        }
+        catch (Exception ex) { Log.Write("dashboard feed: " + ex.Message); }
+    }
+    // whole-file replace: a reader sees the old or the new file, never half of one
+    static void Replace(string file, string text)
+    {
+        string tmp = file + ".widget-tmp";
+        File.WriteAllText(tmp, text, new UTF8Encoding(false));
+        if (File.Exists(file)) File.Replace(tmp, file, null); else File.Move(tmp, file);
+    }
 }
 
 static class Native
@@ -263,13 +387,14 @@ static class Usage
         if (status != 200) return Fail(HttpError(status));
         var j = Parse(body); Dictionary<string, object> rl;
         if (j == null || !TryDict(j, "rate_limit", out rl)) return Fail("Codex response format changed");
-        Quota weekly = null; var extra = new List<string>();
+        Quota weekly = null; var extra = new List<string>(); var wins = new List<UsageWindow>();
         foreach (var key in new[] { "primary_window", "secondary_window" })
         {
             Dictionary<string, object> w;
             if (!TryDict(rl, key, out w)) continue;
             double used = Num(w, "used_percent"), secs = Num(w, "limit_window_seconds");
             if (double.IsNaN(used)) continue;
+            object rw; wins.Add(new UsageWindow { Key = key, Used = used, Seconds = secs, Reset = w.TryGetValue("reset_at", out rw) && rw != null ? ParseTime(rw) : (DateTime?)null });
             if (secs != 604800) { extra.Add(WindowName(secs) + " " + PercentText(used) + "%"); continue; }   // gauge = the 7-day window
             if (weekly != null) continue;
             weekly = Ok(100 - used);
@@ -277,6 +402,7 @@ static class Usage
         }
         if (weekly == null) return Fail("Codex weekly limit not found");
         if (extra.Count > 0) weekly.Extra = string.Join(" · ", extra);
+        weekly.Windows = wins;
         return weekly;
     }
     static string WindowName(double secs)
@@ -365,12 +491,14 @@ static class Usage
         if (double.IsNaN(used7)) return Fail("Claude weekly limit not found");
         var q = Ok(100 - used7);
         object ra; if (w.TryGetValue("resets_at", out ra) && ra != null) q.ResetsAt = ParseTime(ra);
+        q.Windows.Add(new UsageWindow { Key = "seven_day", Used = used7, Reset = q.ResetsAt });
         // the gauge stays the all-model weekly limit; the other windows can block earlier, so list them
         var extra = new List<string>();
         foreach (var k in new[] { "five_hour", "seven_day_opus", "seven_day_sonnet" })
         {
             Dictionary<string, object> x; if (!TryDict(j, k, out x)) continue;
             double u = Num(x, "utilization"); if (double.IsNaN(u)) continue;
+            object rx; q.Windows.Add(new UsageWindow { Key = k, Used = u, Reset = x.TryGetValue("resets_at", out rx) && rx != null ? ParseTime(rx) : (DateTime?)null });
             string label = k == "five_hour" ? L.T("5시간 사용", "5-hour used") : k == "seven_day_opus" ? L.T("주간 Opus 사용", "weekly Opus used") : L.T("주간 Sonnet 사용", "weekly Sonnet used");
             extra.Add(label + " " + PercentText(u) + "%");
         }
@@ -399,6 +527,7 @@ static class Usage
         { used = Num(c, "creditUsagePercent"); if (double.IsNaN(used)) return Fail("Grok usage value is not a number"); }
         var q = Ok(100 - used);
         object end; if (period.TryGetValue("end", out end) && end != null) q.ResetsAt = ParseTime(end);
+        q.Windows.Add(new UsageWindow { Key = "weekly", Used = used, Reset = q.ResetsAt });
         return q;
     }
     // GET only. On 401, re-read once and retry only if the official tool already changed the token.
@@ -1512,6 +1641,7 @@ class GaugeForm : Form
             if (qs[i].Failing || !qs[i].Ok) anyBad = true;
         }
         loading = false;
+        DashboardFeed.Write(qs);
         UpdateVisible();   // a service may have been set up (or removed) since the last round
         agFailedLast = got.ContainsKey("ag-gemini") && (!got["ag-gemini"].Ok || !got["ag-3p"].Ok);
         // at most ONE quick retry per 5-min cycle (a broken provider must not trigger a CLI run every minute)
@@ -1680,6 +1810,7 @@ class GaugeForm : Form
             }
         }
         catch { string m = "agy response format changed"; return new[] { Err(gName, m), Err(pName, m) }; }
+        DashboardFeed.RememberAntigravity(buckets);
 
         // Gemini: the general weekly pool and the Gemini 4 Argon weekly pool; show the tighter one.
         Quota gen = Bucket(buckets, "gemini-weekly", gName), argon = null;
