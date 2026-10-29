@@ -24,7 +24,8 @@ if ($Uninstall) {
     # remove the autostart entry only if it points at this install
     $run = (Get-ItemProperty $runKey -ErrorAction SilentlyContinue).UsageGauge
     if ($run -and ($run.Trim('"') -ieq $exe)) { Remove-ItemProperty $runKey -Name UsageGauge -ErrorAction SilentlyContinue }
-    Remove-Item 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\UsageGauge' -Recurse -ErrorAction SilentlyContinue   # left by the setup file
+    Remove-Item 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\UsageGauge' -Recurse -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName 'UsageGauge dashboard refresh' -Confirm:$false -ErrorAction SilentlyContinue   # set up by tools\usage-insights-collector\install-dashboard.ps1   # left by the setup file
     for ($i = 0; $i -lt 10 -and (Test-Path $dest); $i++) {
         try { Remove-Item $dest -Recurse -Force } catch { Start-Sleep -Milliseconds 500 }
     }

@@ -759,6 +759,7 @@ static class Setup
                  "Remove UsageGauge?\nIts settings and log go too. (Your service logins are left alone.)", quiet)) return;
         StopInstalled();
         Autostart.SetFor(Exe, false);
+        try { var pi = new ProcessStartInfo("schtasks.exe", "/Delete /TN \"UsageGauge dashboard refresh\" /F") { CreateNoWindow = true, UseShellExecute = false }; using (var p = Process.Start(pi)) p.WaitForExit(5000); } catch { }   // the dashboard refresh task, if it was set up
         try { Registry.CurrentUser.DeleteSubKeyTree(UninstKey, false); } catch { }
         try { File.Delete(Shortcut); } catch { }
         Tell("제거했어요.", "UsageGauge was removed.", quiet, false);
@@ -1825,6 +1826,7 @@ class GaugeForm : Form
     {
         var m = new ContextMenu();
         m.MenuItems.Add(L.T("새로고침", "Refresh"), delegate { Refresh_(true); });
+        m.MenuItems.Add(L.T("사용량 상세 보기", "Usage details"), delegate { OpenDashboard(); });
         m.MenuItems.Add("-");
         var gauges = new MenuItem(L.T("표시할 항목", "Gauges"));
         for (int i = 0; i < N; i++)
@@ -1865,7 +1867,16 @@ class GaugeForm : Form
         m.MenuItems.Add(L.T("종료", "Quit"), delegate { Close(); });
         return m;
     }
-    static void Open(string what, string arg)
+    // The local dashboard page, rebuilt every 30 minutes by the "UsageGauge dashboard refresh" task
+    // (tools\usage-insights-collector\install-dashboard.ps1). Opens in the default browser; nothing is sent anywhere.
+    static readonly string DashboardPage = Path.Combine(Log.Dir, "dashboard", "usage-gauge.html");
+    static void OpenDashboard()
+    {
+        if (File.Exists(DashboardPage)) { Open(DashboardPage, null); return; }
+        MessageBox.Show(L.T("사용량 상세 화면이 아직 없어요.\n저장소의 tools\\usage-insights-collector\\install-dashboard.ps1 을 한 번 실행하면 30분마다 새로 만들어져요.",
+            "The usage details page is not set up yet.\nRun tools\\usage-insights-collector\\install-dashboard.ps1 from the repository once; it is then rebuilt every 30 minutes."),
+            "UsageGauge", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }    static void Open(string what, string arg)
     {
         try { using (arg == null ? Process.Start(what) : Process.Start(what, "\"" + arg + "\"")) { } }
         catch (Exception ex) { Log.Write("Could not open " + what + ": " + ex.Message); }
