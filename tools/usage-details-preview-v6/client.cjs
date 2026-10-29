@@ -172,44 +172,35 @@ module.exports = function usageGaugeApp(S, logos, notices, C) {
     if(diff===1&&hm==='00:00')return t('오늘 밤 12시','midnight tonight');
     if(diff===0)return t('오늘 '+hm,'today '+hm);if(diff===1)return t('내일 '+hm,'tomorrow '+hm);
     try{return new Intl.DateTimeFormat(locale(),{timeZone:tz,month:'short',day:'numeric',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(ms));}catch{return shortAt(v);}}
-  function todayItems(){const items=[],now=Date.now(),lims=(S.limits||[]).filter(l=>l.status==='observed'&&remOf(l)!==null),weekly=lims.filter(l=>l.window==='7d');
-    // 1. a weekly allowance that resets soon with plenty left: it is lost at the reset
-    for(const l of weekly){const rem=remOf(l),ms=Date.parse(l.resetAt);if(rem>=30&&Number.isFinite(ms)&&ms>now&&ms-now<=24*3600e3){const p=providerName(l.provider),five=lims.find(x=>x.provider===l.provider&&x.window==='5h');
-      items.push({rank:1,score:rem,title:t(limPlain(l)+' 한도 '+rem+'%가 '+when(l.resetAt)+'에 사라져요',rem+'% of '+limPlain(l)+' resets '+when(l.resetAt)),why:t('초기화되면 남은 양은 넘어가지 않아요.','Unused allowance does not carry over.')+(five?t(' 5시간 한도도 '+remOf(five)+'% 남았어요.',' The 5-hour window has '+remOf(five)+'% left.'):''),act:t('초기화 전까지 무거운 작업은 '+p+'로','Put heavy work on '+p+' until then')});}}
-    // 2. a weekly allowance that is (almost) used up, with where to go instead
-    for(const l of weekly){const rem=remOf(l);if(rem>5)continue;const p=providerName(l.provider),alts=[...weekly.filter(x=>x.provider!==l.provider&&remOf(x)>=30).sort((a,b)=>remOf(b)-remOf(a)).reduce((m,x)=>m.has(x.provider)?m:m.set(x.provider,x),new Map()).values()].slice(0,2);   // one per service: the window with the most left
-      items.push({rank:2,score:100-rem,title:rem<=0?t(p+(JOSA[l.provider]||'는')+' '+when(l.resetAt)+'까지 못 써요',p+' is unavailable until '+when(l.resetAt)):t(limPlain(l)+' 한도가 '+rem+'%만 남았어요','Only '+rem+'% of '+limPlain(l)+' is left'),
-        why:(rem<=0?t('주간 한도를 다 썼어요.','The weekly allowance is used up.'):t(when(l.resetAt)+'에 초기화돼요.','Resets '+when(l.resetAt)+'.'))+(alts.length?' '+alts.map(x=>t(providerName(x.provider)+(JOSA[x.provider]||'는')+' '+remOf(x)+'%',providerName(x.provider)+' '+remOf(x)+'%')).join(', ')+t(' 남았어요.',' left.'):''),
-        act:alts.length?t(p+' 할 일은 '+alts.map(x=>providerName(x.provider)).join('나 ')+'로','Move '+p+' work to '+[...new Set(alts.map(x=>providerName(x.provider)))].join(' or ')):''});}
-    const obs=(S.datasets||[]).filter(d=>d.efficiency&&d.efficiency.status==='observed'&&d.efficiency.requests>=50);
-    // 3. a long conversation still in use (last 6 hours)
-    let live=null;for(const d of obs)for(const x of d.efficiency.recentSessions||[]){const ago=now-Date.parse(x.lastAt);if(x.lastContext>=400000&&ago>=0&&ago<6*3600e3&&(!live||x.lastContext>live.x.lastContext))live={d,x,ago};}
-    if(live){const where=live.x.project&&live.x.project!=='unknown'?nameOf(live.x.project):t('프로젝트 없는','unfiled');items.push({rank:3,score:live.x.lastContext,title:t('지금 쓰는 '+where+' 대화가 '+compact(live.x.lastContext)+' 토큰이에요','The '+where+' conversation in use is '+compact(live.x.lastContext)+' tokens'),why:t(srcName(live.d)+', 마지막 요청은 '+gapText(Math.max(1,Math.round(live.ago/60000)))+' 전. 요청할 때마다 이만큼을 다시 읽어요.',srcName(live.d)+', last request '+gapText(Math.max(1,Math.round(live.ago/60000)))+' ago. Every request re-reads all of it.'),act:t('작업이 바뀌면 새 대화로','Start a new conversation when the task changes')});}
-    // 4. long conversations carry most of the tokens
+  // long conversations still in use: the only thing worth doing right now, named so it can be acted on
+  function liveLong(){const now=Date.now(),out=[],seen=new Set();
+    for(const d of (S.datasets||[]).filter(d=>d.efficiency&&d.efficiency.status==='observed'))for(const x of d.efficiency.recentSessions||[]){const ago=now-Date.parse(x.lastAt);if(x.lastContext>=400000&&ago>=0&&ago<6*3600e3&&!(S.localHelpers||[]).includes(x.session))out.push({d,x,ago});}
+    return out.sort((a,b)=>b.x.lastContext-a.x.lastContext).filter(o=>{if(seen.has(o.x.session))return false;seen.add(o.x.session);return true;}).slice(0,3);}
+  const convName=x=>{const n=S.localNames&&S.localNames[x.session];if(n)return '"'+n+'"';const p=x.project&&x.project!=='unknown'?nameOf(x.project):'';return p?t(p+' 대화',p+' conversation'):t('이름 없는 대화','Untitled conversation');};
+  const agoText=ms=>{const m=Math.round(ms/60000);return m<1?t('방금 전','just now'):t(gapText(m)+' 전',gapText(m)+' ago');};
+  function habits(){const out=[],obs=(S.datasets||[]).filter(d=>d.efficiency&&d.efficiency.status==='observed'&&d.efficiency.requests>=50);
     const longs=obs.filter(d=>{const e=d.efficiency;return e.longSessions>=3&&pct(e.longSessionContextTokens,e.contextTokens)>=50;}).sort((a,b)=>b.efficiency.contextTokens-a.efficiency.contextTokens);
-    if(longs.length){const d=longs[0],e=d.efficiency,top=(e.byProject||[]).filter(p=>p.longSessions>0).sort((a,b)=>b.longSessions-a.longSessions).slice(0,3);
-      items.push({rank:4,score:pct(e.longSessionContextTokens,e.contextTokens),title:t('긴 대화가 '+srcName(d)+' 토큰의 '+pct(e.longSessionContextTokens,e.contextTokens)+'%를 먹었어요','Long conversations carry '+pct(e.longSessionContextTokens,e.contextTokens)+'% of '+srcName(d)+' tokens'),
-        why:t('40만 토큰 넘는 대화 '+e.longSessions+'개'+(top.length?'. '+top.map(p=>nameOf(p.id)+' '+p.longSessions+'개').join(', '):'')+'. 요청마다 앞 대화를 통째로 다시 읽어요.',e.longSessions+' conversations over 400K tokens'+(top.length?': '+top.map(p=>nameOf(p.id)+' '+p.longSessions).join(', '):'')+'. Each request re-reads the whole history.'),act:t('작업이 바뀌면 새 대화로','Start a new conversation when the task changes')});}
-    // 5. history written again after a break
+    if(longs.length){const e=longs[0].efficiency;out.push(t('긴 대화(40만 토큰 넘음) '+e.longSessions+'개가 '+srcName(longs[0])+' 토큰의 '+pct(e.longSessionContextTokens,e.contextTokens)+'%',e.longSessions+' long conversations (over 400K) carry '+pct(e.longSessionContextTokens,e.contextTokens)+'% of '+srcName(longs[0])+' tokens'));}
     const brk=obs.filter(d=>{const e=d.efficiency;return e.expiryMeaning==='history_rewritten_after_cache_expired'&&e.cacheExpiries>=5&&pct(e.expiryRewriteTokens,e.freshTokens)>=15;}).sort((a,b)=>pct(b.efficiency.expiryRewriteTokens,b.efficiency.freshTokens)-pct(a.efficiency.expiryRewriteTokens,a.efficiency.freshTokens));
-    if(brk.length){const d=brk[0],e=d.efficiency,p=pct(e.expiryRewriteTokens,e.freshTokens),hour=(e.cacheWrite1hTokens||0)>(e.cacheWrite5mTokens||0);
-      items.push({rank:5,score:p,title:t(srcName(d)+'에서 쉬었다 이어 쓴 값이 새 토큰의 '+p+'%예요','Resuming after breaks is '+p+'% of new tokens in '+srcName(d)),
-        why:t(e.cacheExpiries+'번'+(e.expiryMedianGapMinutes!=null?', 보통 '+gapText(e.expiryMedianGapMinutes)+' 쉰 뒤였어요':'')+'. 쉬는 사이 저장해 둔 앞 대화가 지워져 처음부터 다시 저장했어요.',e.cacheExpiries+' times'+(e.expiryMedianGapMinutes!=null?', usually after '+gapText(e.expiryMedianGapMinutes):'')+'. The saved history expired and was written again.'),
-        act:hour?t('1시간 넘게 쉴 거면 새 대화로','After more than an hour away, start a new conversation'):t('길게 쉴 거면 새 대화로','After a long break, start a new conversation')});}
-    return items.sort((a,b)=>a.rank-b.rank||b.score-a.score).slice(0,4);}
-  function todayHTML(){const items=todayItems(),now=Date.now();
-    const list=items.length?'<ol class="today-list">'+items.map((x,i)=>'<li class="today-item'+(i===0?' first':'')+'"><span class="today-no">'+(i+1)+'</span><div><p class="today-title">'+esc(x.title)+'</p><p class="today-why">'+esc(x.why)+'</p>'+(x.act?'<p class="today-act">'+esc(x.act)+'</p>':'')+'</div></li>').join('')+'</ol>'
-      :'<p class="today-none">'+t('지금은 할 일이 없어요. 한도도 넉넉하고 대화도 짧게 유지되고 있어요.','Nothing to do right now: limits are fine and conversations stay short.')+'</p>';
-    const lims=(S.limits||[]).filter(l=>l.status==='observed'&&remOf(l)!==null&&!(l.provider==='antigravity'&&l.window!=='7d')).sort((a,b)=>(Date.parse(a.resetAt)||9e15)-(Date.parse(b.resetAt)||9e15));
+    if(brk.length){const e=brk[0].efficiency;out.push(t('쉬었다 이어 쓴 대화가 '+srcName(brk[0])+' 새 토큰의 '+pct(e.expiryRewriteTokens,e.freshTokens)+'%',resumeAfterBreak(brk[0],e)));}
+    return out;}
+  const resumeAfterBreak=(d,e)=>'Resuming after breaks is '+pct(e.expiryRewriteTokens,e.freshTokens)+'% of new tokens in '+srcName(d);
+  function todayHTML(){const now=Date.now();
+    const lims=(S.limits||[]).filter(l=>l.status==='observed'&&remOf(l)!==null&&!(l.provider==='antigravity'&&l.window!=='7d')).sort((a,b)=>(remOf(a)<=0)-(remOf(b)<=0)||(Date.parse(a.resetAt)||9e15)-(Date.parse(b.resetAt)||9e15));
     const newest=Math.max(...(S.limits||[]).map(l=>Date.parse(l.capturedAt)).filter(Number.isFinite),0),age=newest?Math.round((now-newest)/60000):null;
-    const limRows=lims.map(l=>{const rem=remOf(l);return '<div class="today-lim"><span class="today-lim-name">'+esc(limPlain(l))+'<small>'+esc(when(l.resetAt)||t('초기화 시각 미확인','Reset unknown'))+'</small></span><span class="track"><i class="'+(rem<=20?'low':'')+'" style="width:'+Math.max(rem,1)+'%"></i></span><span class="today-lim-value num">'+rem+'%</span></div>';}).join('');
+    const chip=l=>{const rem=remOf(l),w=when(l.resetAt);if(rem<=0)return '<span class="today-chip out">'+esc(limPlain(l))+' '+t('못 씀','used up')+(w?' <small>'+esc(w)+t('까지','')+'</small>':'')+'</span>';
+      return '<span class="today-chip'+(rem<=20?' low':'')+'">'+esc(limPlain(l))+' <b class="num">'+rem+'%</b>'+(w?' <small>'+esc(w)+'</small>':'')+'</span>';};
+    const live=liveLong();
+    const rows=live.length?'<ul class="today-rows">'+live.map(o=>'<li><div class="today-row-main"><span class="today-row-title">'+esc(convName(o.x))+' <span class="num">'+compact(o.x.lastContext)+t(' 토큰',' tokens')+'</span></span><span class="today-act">'+t('다음 작업은 새 대화에서','Next task in a new conversation')+'</span></div><p class="today-why">'+esc(srcName(o.d))+', '+agoText(o.ago)+'. '+t('여기에 한 번 더 물으면 '+compact(o.x.lastContext)+' 토큰을 처음부터 다시 읽어요.','One more message here re-reads all '+compact(o.x.lastContext)+' tokens.')+'</p></li>').join('')+'</ul>'
+      :'<p class="today-none">'+t('지금 할 일 없어요. 40만 토큰 넘게 이어 쓰는 대화가 없어요.','Nothing to do now: no conversation in use is over 400K tokens.')+'</p>';
     const sum7=(d,from,to)=>{const r=d.days.slice(from,to).filter(x=>C.number(x.tokens));return r.length?r.reduce((n,x)=>n+x.tokens,0):null;};
     const trend=(S.datasets||[]).filter(d=>d.id!=='aside_unattributed'&&Array.isArray(d.days)&&d.days.length>=14).map(d=>({d,now:sum7(d,-7),before:sum7(d,-14,-7)})).filter(x=>x.now>0).sort((a,b)=>b.now-a.now).slice(0,3);
     const trendHTML=trend.map(x=>{let ch;if(!x.before||x.now/x.before>=20)ch=t('크게 늘었어요','sharply up');else{const r=x.now/x.before;ch=r>=1.5?t(r.toFixed(1)+'배',r.toFixed(1)+'x'):(r>=1?'+':'')+Math.round((r-1)*100)+'%';}
       return '<div class="today-trend-item"><strong class="num">'+compact(x.now)+'</strong> <span class="today-change">'+ch+'</span><span class="today-trend-name">'+esc(srcName(x.d))+(x.before!=null?t(' / 지난주 ',' / last week ')+compact(x.before):'')+'</span></div>';}).join('');
-    return '<div class="today-block"><h2 class="today-head">'+t('지금 할 일','What to do now')+'</h2>'+list+'</div>'
-      +(limRows?'<div class="today-block"><h2 class="today-head">'+t('남은 한도','Limits left')+'<span>'+t('초기화 빠른 순','soonest reset first')+(age!=null&&age>=120?t(' / '+gapText(age)+' 전 값',' / '+gapText(age)+' old'):'')+'</span></h2><div class="today-lims">'+limRows+'</div></div>':'')
-      +(trendHTML?'<div class="today-block"><h2 class="today-head">'+t('이번 주 흐름','This week')+'<span>'+t('지난 7일과 그 전 7일, 출처끼리 더하지 않음','last 7 days vs the 7 before, sources not added')+'</span></h2><div class="today-trend">'+trendHTML+'</div></div>':'')
+    const hb=habits();
+    return (lims.length?'<div class="today-block"><h2 class="today-head">'+t('지금 쓸 수 있는 것','Available now')+(age!=null&&age>=120?'<span>'+t(gapText(age)+' 전 값',gapText(age)+' old')+'</span>':'')+'</h2><div class="today-strip">'+lims.map(chip).join('')+'</div></div>':'')
+      +'<div class="today-block"><h2 class="today-head">'+t('지금 할 일','What to do now')+'</h2>'+rows+'</div>'
+      +((trendHTML||hb.length)?'<div class="today-block"><h2 class="today-head">'+t('이번 주 흐름','This week')+'<span>'+t('지난 7일과 그 전 7일, 출처끼리 더하지 않음','last 7 days vs the 7 before, sources not added')+'</span></h2>'+(trendHTML?'<div class="today-trend">'+trendHTML+'</div>':'')+(hb.length?'<p class="today-habit">'+t('최근 30일 습관: ','Last 30 days: ')+hb.map(esc).join(t(', ','; '))+'</p>':'')+'</div>':'')
       +'<h2 class="today-detail-head">'+t('서비스별 자세히','By service')+'</h2>';}
 
   function sourceShort(x){const p={codex:'Codex',claude:'Claude',grok:'Grok',antigravity:'Antigravity',aside:'Aside'}[x.provider]||x.provider;return p+(x.scope==='account'?t('(서버)','(server)'):x.source==='aside_messages'?t('(Aside)','(Aside)'):t('(이 PC)','(this PC)'));}
