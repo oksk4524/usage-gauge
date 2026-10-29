@@ -266,6 +266,8 @@ img[data-logo="grok"]{filter:none!important}.logo-dark{display:none}html[data-th
 /* an old template rule (.quota-row:nth-child(4) .quota-heading{display:block}) dropped the value of every second row below its name in these cards */
 .insight-panel .quota-row .quota-heading{display:grid}
 
+/* status colour only for real warnings: "partial" is information (today is always partial) */
+.partial-chip{border-color:var(--line);color:var(--muted)}
 /* Mobile vertical scrollbar: native scrolling, quiet track, system high-contrast untouched. */
 @media (max-width:820px) and (forced-colors:none){
   html{--scroll-thumb:#8993a1;--scroll-thumb-hover:#697687}

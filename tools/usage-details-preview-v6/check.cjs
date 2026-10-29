@@ -94,6 +94,7 @@ click({},'dialog-close');assert.equal(node('#detail-dialog').open,false);
   clk({usage:'1'});assert.ok(/<dt>캐시 생성<\/dt><dd class="num">/.test(nn('#dialog-body').innerHTML)&&nn('#dialog-body').innerHTML.includes('<dt>정확한 합계</dt>'),'v5: exact parts in details');clk({},'dialog-close');
   assert.ok(!/집계 규칙은 가정|Documented counting/.test(view()));
   // 4) all period: server dataset starts 2026-02-03, local starts 2026-09-30 (caption)
+  ls.change({target:{id:'dataset',value:'0'}});   // the account dataset on purpose: a service now opens on its local records first
   clk({period:'all'});assert.ok(view().includes('2026'));assert.ok(/2월 3일|Feb 3/.test(view()));
   clk({lang:'en'});assert.ok(/Feb 3, 2026/.test(view()));
   clk({view:'records'});assert.equal((view().match(/<tr>/g)||[]).length,270);
