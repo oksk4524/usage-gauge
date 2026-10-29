@@ -15,7 +15,7 @@
 // that copies old requests into a new file therefore keeps them in the original conversation. (The per-file cache mode
 // picks by processing order instead, i.e. the most recently modified file, which moves requests whenever an old file
 // is touched.)
-const RULES_VERSION='ix-2';   // ix-2: keyed ids, cache-write lifetime columns
+const RULES_VERSION='ix-3';   // ix-2: keyed ids, cache-write lifetime columns; ix-3: recent conversations in efficiency
 module.exports=function makeIndexed(L){
  const {fs,DatabaseSync,FIELDS,newDiag,addDiag,counts,integer,iso,hash,statSig,headOf,inRoot,readLines,readCodex,parseCodex,parseGrok,CACHE_VERSION,APPEND_ONLY,semantics,efficiencyOf}=L;
  const DIMS=['project','session','model','attribution','app'];
