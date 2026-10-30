@@ -211,8 +211,8 @@ do {
           "antigravity: weekly values leave out 5-hour buckets (Argon 17, the rest 100)")
     check(ag4[0].windows.filter { $0.key == "five_hour" }.count == 1 && ag4[1].windows.filter { $0.key == "five_hour" }.count == 2,
           "antigravity: 5-hour buckets stay as other windows of their group")
-    check(abs(MenuBarStrip.others(ag4[1])[0].remaining - 5) < 0.001 && MenuBarStrip.blocked(ag4[1]) == nil && MenuBarStrip.blocked(ag4[0])?.label == "5시간",
-          "antigravity: the lowest 5-hour bucket is the other window; below 2% blocks")
+    check(abs(MenuBarStrip.others(ag4[1])[0].remaining - 5) < 0.001 && MenuBarStrip.blocked(ag4[1]) == nil && MenuBarStrip.blocked(ag4[0]) == nil,
+          "antigravity: the lowest 5-hour bucket is the other window; 1% left is not a block (only 0 is)")
     var agB3 = agB; agB3.removeValue(forKey: "gemini-argon-wtu-weekly")
     check(!Antigravity.split(agB3)[0].ok && Antigravity.split(agB3)[1].ok, "argon split: no Argon bucket, only the Antigravity item")
     let grUsed = named(Usage.ok(0), "Grok"); grUsed.resetsAt = nowM.addingTimeInterval(3 * 3600); grUsed.lastOk = Date()
@@ -298,16 +298,22 @@ do {
     check(Design.gauge(grokOnly, logo: "grok", now: now, tz: tz).second == nil, "ring: no other window, no second line")
     check(Design.gauge(claude(0, 100), logo: "claude", now: now, tz: tz).second == nil, "ring: weekly used up keeps the old look, no 5-hour line")
     // menu bar: 5-hour used up while weekly has room -> weekly number, empty bar, refill hour, tooltip line
-    let blockedQ = claude(99, 1.5)
+    let blockedQ = claude(99, 0)
     let none = Quota.noLoginFound()   // Codex not signed in: Claude is the only item
     let es = MenuBarStrip.entries(main: [none, blockedQ], ag: [])
     check(es.count == 1 && es[0].logo == "claude" && es[0].window == "주간" && es[0].remaining == 99 && es[0].blocked?.label == "5시간" && es[0].blocked?.reset == r5,
-          "marker: below 2% in the 5-hour window blocks, the item stays with its weekly value")
+          "marker: 0% in the 5-hour window blocks, the item stays with its weekly value")
     check(MenuBarStrip.numberText(es[0], now: now, tz: tz) == "99" && MenuBarStrip.blockedText(es[0], now: now, tz: tz) == "1시"
           && MenuBarStrip.barRemaining(es[0]) == 0, "marker: weekly number, empty bar, refill hour like a used-up item")
     check(MenuBarStrip.tooltip(es, now: now, tz: tz) == "Claude 주간 99% 남음\n5시간 다 씀, 01:19에 다시 차요", "marker: tooltip")
-    let open = MenuBarStrip.entries(main: [none, claude(99, 2)], ag: [])[0]
-    check(open.blocked == nil && MenuBarStrip.blockedText(open, now: now, tz: tz) == nil && MenuBarStrip.barRemaining(open) == 99, "marker: 2% left is not blocked")
+    let open = MenuBarStrip.entries(main: [none, claude(99, 1)], ag: [])[0]
+    check(open.blocked == nil && MenuBarStrip.blockedText(open, now: now, tz: tz) == nil && MenuBarStrip.barRemaining(open) == 99, "marker: 1% left is not blocked")
+    check(MenuBarStrip.entries(main: [none, claude(99, 1.5)], ag: [])[0].blocked == nil && MenuBarStrip.entries(main: [none, claude(99, 0.4)], ag: [])[0].blocked == nil,
+          "exhausted only at 0: 1.5% and 0.4% left are not used up")
+    let g1 = Design.gauge(claude(99, 1), logo: "claude", now: now, tz: tz)
+    check(g1.second == "5시간 1%" && !g1.secondUsedUp && g1.detail?.contains("5시간 1% 남음") == true, "exhausted only at 0: 1% shows as 1")
+    check(MenuBarStrip.isUsedUp(MenuBarStrip.Window(label: "5시간", remaining: 0, reset: nil)) && !MenuBarStrip.isUsedUp(MenuBarStrip.Window(label: "5시간", remaining: 1, reset: nil)),
+          "exhausted threshold: 0 is used up, 1 is not")
     // empty weekly keeps the weekday label and is never marked as 5-hour blocked
     let emptyWeek = MenuBarStrip.entries(main: [none, claude(0, 0)], ag: [])[0]
     check(emptyWeek.blocked == nil && MenuBarStrip.numberText(emptyWeek, now: now, tz: tz) == "목", "marker: weekly used up keeps the weekday label")
@@ -441,6 +447,31 @@ do {
     check(Sched.decide(ag, now: at(60), idle: RefreshPolicy.idle(.agy)) == .wait(at(600)), "agy: no run sooner than 10 min, even from the button")
     ag.requestGap = nil
     check(Sched.decide(ag, now: at(700), idle: RefreshPolicy.idle(.agy)) == .wait(at(1200)), "agy: idle run every 20 min")
+    // after a backoff ends the minimum gap since the last start still holds
+    var agT = ProviderState(); agT.floorGap = RefreshPolicy.minGap(.agy)
+    Sched.started(&agT, now: t0); Sched.finished(&agT, now: at(30), transient: true, rateLimited: false, retryAfter: nil)
+    check(agT.blockedUntil == at(90) && Sched.decide(agT, now: at(90), idle: RefreshPolicy.idle(.agy)) == .wait(at(600)),
+          "floor after backoff: agy timeout at 30 s, backoff ends at 90 s, the retry still waits for 10 min after the start")
+    check(Sched.decide(agT, now: at(600), idle: RefreshPolicy.idle(.agy)) == .start, "floor after backoff: agy retries once both have passed")
+    var cl = ProviderState()
+    Sched.started(&cl, now: t0); Sched.finished(&cl, now: at(1), transient: false, rateLimited: false, retryAfter: nil, adaptive: true)
+    Sched.started(&cl, now: at(200)); Sched.finished(&cl, now: at(201), transient: true, rateLimited: false, retryAfter: nil, adaptive: true)
+    check(cl.blockedUntil == at(261) && Sched.decide(cl, now: at(261), idle: 180) == .wait(at(290)),
+          "floor after backoff: Claude's 60 s network backoff can't beat its 90 s gap")
+    Sched.clearNetworkBackoff(&cl, now: at(230))
+    check(Sched.decide(cl, now: at(230), idle: 180) == .wait(at(290)), "floor after backoff: clearing a network backoff still waits for the gap")
+    var lg = ProviderState(); lg.floorGap = 0
+    Sched.started(&lg, now: t0); Sched.finished(&lg, now: at(1), transient: true, rateLimited: true, retryAfter: 300)
+    check(Sched.decide(lg, now: at(301), idle: 180) == .start, "floor after backoff: a block longer than the gap is unchanged")
+    // a general trigger (wake, network back) never clears agy's backoff or asks for agy
+    var all: [Provider: ProviderState] = Dictionary(uniqueKeysWithValues: Provider.allCases.map { ($0, ProviderState()) })
+    all[.agy]!.floorGap = RefreshPolicy.minGap(.agy)
+    for p in [Provider.codex, .agy] { Sched.started(&all[p]!, now: t0); Sched.finished(&all[p]!, now: at(30), transient: true, rateLimited: false, retryAfter: nil) }
+    Sched.generalTrigger(&all, now: at(40), reason: "깨어남")
+    check(all[.agy]!.blockedUntil == at(90) && all[.agy]!.requestGap == nil, "general trigger: agy keeps its backoff and gets no request")
+    check(all[.codex]!.blockedUntil == at(40) && all[.codex]!.requestGap == RefreshPolicy.minGap(.codex) && all[.claude]!.requestGap == RefreshPolicy.minGap(.claude),
+          "general trigger: Codex's network backoff is cleared, Codex and Claude are asked")
+    check(Sched.decide(all[.codex]!, now: at(40), idle: 180) == .start, "general trigger: Codex retries now (its gap since the start has passed)")
 
     // Claude debounce: once after the chat goes quiet
     var cd2 = Debouncer.claude(), od = Debouncer.others()
@@ -475,7 +506,19 @@ do {
     tc.store(Usage.Login(error: "키체인 읽기가 허용되지 않았어요"), now: t0)
     check(tc.usable(now: t0) == nil && tc.login == nil, "token cache: errors are never kept")
     tc.store(Usage.Login(access: "tok2", expires: nil), now: t0)
-    check(tc.usable(now: at(3000))?.access == "tok2" && tc.usable(now: at(3700)) == nil, "token cache: no expiry -> read again after an hour")
+    check(tc.usable(now: at(899))?.access == "tok2" && tc.usable(now: at(900)) == nil, "token cache: no expiry -> read again after 15 min")
+    tc.store(Usage.Login(access: "tok3", expires: at(7200)), now: t0)
+    check(tc.usable(now: at(14 * 60))?.access == "tok3" && tc.usable(now: at(15 * 60)) == nil,
+          "token cache: a token valid for 2 hours is still read again after 15 min (an account switch shows within 15 min)")
+    check(TokenCache.maxAge == 900 && 3600 / TokenCache.maxAge <= 4, "token cache: at most 4 keychain reads an hour while idle")
+    // the account generation: a switch drops lookups that began before it
+    var who = ClaudeIdentity()
+    check(!who.note(nil) && !who.note("claude:AAA") && who.generation == 0, "claude account: the first known account is no change")
+    let g0 = who.generation
+    check(!who.note("claude:aaa") && !who.note(nil) && who.generation == g0, "claude account: same account (any case) or unknown: same generation")
+    check(who.note("claude:BBB") && who.generation == g0 + 1 && who.key == "claude:BBB", "claude account: a switch starts a new generation")
+    check(!who.isCurrent(g0) && who.isCurrent(g0 + 1), "claude account: a lookup from before the switch is not current, one after it is")
+    check(!who.note("claude:BBB") && who.note("claude:AAA") && who.generation == g0 + 2, "claude account: switching back is another change")
 
     // AI habit check: a link asks first, 10 min between runs
     check(HabitGate.decide(fromURL: true, running: false, lastRun: nil, now: t0) == .confirm, "habit gate: a link asks first")
@@ -487,18 +530,32 @@ do {
     check(HabitGate.waitText(9) == "9분 뒤에 다시 돌릴 수 있어요" && HabitGate.confirmTitle == "AI 진단을 돌릴까요?"
           && HabitGate.confirmText == "한도를 조금 써요.", "habit gate: wording")
 
-    // agy logs: only our run's file and week-old CLI logs
-    let wd = "/var/folders/x/T/UsageGauge-agy"
-    let heads = ["cli-20261031_000101.log": "I1031 server.go] Creating CLI server backend: workspaceDirs=[/private/var/folders/x/T/UsageGauge-agy]",
+    // agy logs: only the file of our own run, proven by its exact per-run workspace; never other runs' logs, whatever their age
+    let wd = "/var/folders/x/T/UsageGauge-agy/1B6E1F2A-0000-4000-8000-00000000AAAA"
+    let heads = ["cli-20261031_000101.log": "I1031 server.go] Creating CLI server backend: workspaceDirs=[/private/var/folders/x/T/UsageGauge-agy/1B6E1F2A-0000-4000-8000-00000000AAAA]",
                  "cli-20261031_000102.log": "I1031 manager.go] Initializing CLI store manager for workspace /Users/me/code/app",
-                 "cli-20261020_000000.log": "old", "notes.txt": "x", "cli.log": "x"]
+                 "cli-20261031_000103.log": "I1031 server.go] Creating CLI server backend: workspaceDirs=[/var/folders/x/T/UsageGauge-agy/1B6E1F2A-0000-4000-8000-00000000AAAA-other]",
+                 "cli-20261031_000104.log": "I1031 manager.go] Initializing CLI store manager for workspace /var/folders/x/T/UsageGauge-agy/1B6E1F2A-0000-4000-8000-00000000AAAA/sub",
+                 "cli-20261031_000105.log": "I1031 manager.go] Initializing CLI store manager for workspace /var/folders/x/T/UsageGauge-agy",
+                 "cli-20261031_000106.log": "x\nI1031 manager.go] Initializing CLI store manager for workspace /var/folders/x/T/UsageGauge-agy/1B6E1F2A-0000-4000-8000-00000000AAAA\n",
+                 "cli-20261031_000107.log": "I1031 server.go] Creating CLI server backend: workspaceDirs=[/Users/me/a /var/folders/x/T/UsageGauge-agy/1B6E1F2A-0000-4000-8000-00000000AAAA]",
+                 "cli-20261020_000000.log": "workspace " + wd, "notes.txt": "workspace " + wd, "cli.log": "workspace " + wd]
     let lf: [(name: String, created: Date, modified: Date)] = [
-        ("cli-20261031_000101.log", at(1), at(9)), ("cli-20261031_000102.log", at(2), at(9)),
+        ("cli-20261031_000101.log", at(1), at(9)), ("cli-20261031_000102.log", at(2), at(9)), ("cli-20261031_000103.log", at(2), at(9)),
+        ("cli-20261031_000104.log", at(2), at(9)), ("cli-20261031_000105.log", at(2), at(9)), ("cli-20261031_000106.log", at(3), at(9)),
+        ("cli-20261031_000107.log", at(3), at(9)),
         ("cli-20261020_000000.log", at(-8 * 86400), at(-8 * 86400)), ("cli-20261024_000000.log", at(-6 * 86400), at(-6 * 86400)),
-        ("notes.txt", at(-9 * 86400), at(-9 * 86400)), ("cli.log", at(1), at(1))]
+        ("notes.txt", at(1), at(1)), ("cli.log", at(1), at(1))]
     let pk = AgyLogs.pick(lf, workDir: wd, runStart: t0, now: at(10)) { heads[$0] ?? "" }
-    check(pk.run == ["cli-20261031_000101.log"], "agy logs: the file from our run (our workspace, inside the run) is removed")
-    check(pk.old == ["cli-20261020_000000.log"], "agy logs: CLI logs older than 7 days are pruned, nothing else")
+    check(pk == ["cli-20261031_000101.log", "cli-20261031_000106.log", "cli-20261031_000107.log"],
+          "agy logs: only files naming exactly this run's workspace (also via /private, in a list) are removed")
+    check(!pk.contains("cli-20261031_000103.log") && !pk.contains("cli-20261031_000104.log") && !pk.contains("cli-20261031_000105.log"),
+          "agy logs: a longer path, a subfolder or the shared parent folder is not ours")
+    check(!pk.contains("cli-20261020_000000.log") && !pk.contains("cli-20261024_000000.log"), "agy logs: old logs of other runs are never pruned")
+    check(AgyLogs.pick(lf, workDir: wd + "/", runStart: t0, now: at(10)) { heads[$0] ?? "" } == pk, "agy logs: a trailing slash doesn't change the match")
+    let w1 = AgyLogs.newWorkDir(), w2 = AgyLogs.newWorkDir()
+    check(w1 != w2 && w1.hasPrefix(AgyLogs.root + "/") && UUID(uuidString: (w1 as NSString).lastPathComponent) != nil, "agy logs: a new uuid workspace every run")
+    check(AgyLogs.workspaces("a workspaceDirs=[/p/q /r]\nb for workspace /s/t") == ["/p/q", "/r", "/s/t"], "agy logs: workspace fields parsed whole")
     check(AgyLogs.isCliLog("cli-20261030_234908.log") && !AgyLogs.isCliLog("cli.log") && !AgyLogs.isCliLog("cli-2026.log.bak"), "agy logs: name pattern")
 
     // log rotation

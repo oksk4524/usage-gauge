@@ -18,16 +18,27 @@ function conv({session,model='claude-opus-5-5',n=300,start=30000,step=2000,cold=
     prevCtx=ctx;rows.push({session,model:m,at,output:out,cw5m:null,cw1h:null,...r});}
   return rows;}
 
-// 1. weighting: the documented price table
-{const p=h.priceFor('claude_aside_local','claude-opus-5-5');assert.equal(p.out,5);assert.equal(p.read,0.1);assert.equal(p.write5m,1.25);assert.equal(p.write1h,2);
- assert.equal(h.priceFor('codex_aside_local','gpt-5.6-sol').out,8);assert.equal(h.priceFor('codex_aside_local','gpt-6-astra').out,4,'unknown OpenAI model: 4 and a note');
- assert.equal(h.priceFor('codex_aside_local','gpt-6-astra').known,false);assert.equal(h.priceFor('grok_aside_local','grok-4.7').read,0.25);
+// 1. weighting: the documented price table, absolute USD per token, one unit for every model
+{const U=1e-6,close=(x,y,m)=>assert.ok(Math.abs(x-y)<=Math.abs(y)*1e-9,m+': '+x+' vs '+y);
+ const p=h.priceFor('claude_aside_local','claude-opus-5-5');close(p.in,4*U,'Opus input');close(p.read,0.2*U,'Opus cache read');close(p.out,20*U,'Opus output');
+ close(p.write5m,5*U,'Opus 5-minute write = 1.25x input');close(p.write1h,8*U,'Opus 1-hour write = 2x input');
+ const astra=h.priceFor('codex_aside_local','gpt-6-astra');assert.equal(astra.known,true);close(astra.in,10*U,'Astra input');close(astra.read,1*U,'Astra cached');close(astra.out,50*U,'Astra output');close(astra.write,10*U,'OpenAI write = 1x input');
+ close(h.priceFor('codex_aside_local','gpt-6.1-sol').read,0.1*U,'6.1 Sol cached');close(h.priceFor('grok_aside_local','grok-4.7').read,0.5*U,'Grok 4.7 cached');
+ assert.ok(h.PRICE_TABLE.every(r=>r.in>0&&r.read>0&&r.out>0&&r.read<r.in&&/^(claude|openai|xai)$/.test(r.family)),'every row has input, cached and output prices');assert.equal(h.PRICE_CHECKED,'2026-10-31');
+ const u=h.priceFor('codex_aside_local','gpt-7-nova');assert.equal(u.known,false,'not in the table: 가격 미상');assert.equal(u.in+u.read+u.out,0);
  assert.ok(/공개 API 요금 비율 기준, 구독 한도 실제 차감 방식은 비공개라 추정/.test(h.PRICE_NOTE));
  const one=[{session:'s',model:'claude-opus-5-5',at:T0,input:100,output:10,cacheRead:1000,cacheCreate:400,cw5m:100,cw1h:200}];
- const a=h.analyze('claude_cli_local',one);assert.equal(a.total,100+100*1.25+200*2+100*1.25+1000*0.1+10*5,'5-minute, 1-hour and unrecorded writes, read 0.1, output 5');
+ const a=h.analyze('claude_cli_local',one);close(a.total,(100*4+100*4*1.25+200*4*2+100*4*1.25+1000*0.2+10*20)*U,'5-minute, 1-hour and unrecorded writes at input x1.25/x2, read and output at their own prices');
  assert.equal(a.hitPct,Math.round(100*1000/1500),'hit rate = re-read share of input');
- const b=h.analyze('codex_aside_local',[{session:'s',model:'gpt-6-astra',at:T0,input:100,output:10,cacheRead:1000,cacheCreate:0}]);assert.equal(b.total,100+100+40);assert.deepEqual(b.outUnknown,['GPT-6 Astra']);
- ok('weighting follows the price table (writes by lifetime, reads 0.1, output ratio, unknown model 4)');}
+ const b=h.analyze('codex_aside_local',[{session:'s',model:'gpt-6-astra',at:T0,input:100,output:10,cacheRead:1000,cacheCreate:0}]);close(b.total,(100*10+1000*1+10*50)*U,'Astra');assert.deepEqual(b.unpriced,[]);
+ // shares follow price differences: the same tokens on Opus and Sonnet are 2:1, on Astra and 6.1 Sol 5:1
+ const same=m=>({session:'s'+m,model:m,at:T0,input:1000,output:100,cacheRead:10000,cacheCreate:0});
+ const c=h.analyze('claude_aside_local',[same('claude-opus-5-5'),same('claude-sonnet-5-5')]);assert.deepEqual(c.byModel.map(m=>[m.label,m.share]),[['Opus 5.5',67],['Sonnet 5.5',33]],'Opus costs twice Sonnet per token');
+ const d=h.analyze('codex_aside_local',[same('gpt-6-astra'),same('gpt-6.1-sol')]);assert.deepEqual(d.byModel.map(m=>m.share),[Math.round(100*(1000*10+10000*1+100*50)/(1000*12+10000*1.1+100*60)),Math.round(100*(1000*2+10000*0.1+100*10)/(1000*12+10000*1.1+100*60))],'Astra against 6.1 Sol by absolute price');
+ // a model without a listed price: tokens listed, left out of the shares
+ const e=h.analyze('codex_aside_local',[same('gpt-6-astra'),same('gpt-7-nova')]);assert.deepEqual(e.byModel.map(m=>[m.label,m.share]),[['GPT-6 Astra',100]],'unpriced model out of the shares');
+ assert.deepEqual(e.unpriced,[{label:'GPT-7 Nova',tokens:11100}],'its tokens are kept');
+ ok('weighting: absolute public prices per model (writes by lifetime), shares follow price differences, unknown models 가격 미상');}
 
 // 2. detection: cold restarts after an idle gap, model switches, compactions; re-reads are hits, not events
 {const rows=[...conv({session:'a',n:200,cold:[50,120],switchAt:[160]}),...conv({session:'b',n:500,limit:850000,post:75000,step:3000})];
@@ -60,19 +71,43 @@ function conv({session,model='claude-opus-5-5',n=300,start=30000,step=2000,cold=
  const s=mk(rep(25,[7,true]));s[2].model='claude-sonnet-5-5';const sa=h.analyze('claude_aside_local',s);assert.equal(sa.gapTable.find(x=>x.from===5).n,24);
  ok('gap buckets: hit rate per bucket, lifetime at the first bucket under 50%, 20+ samples for 기록으로 확인함, misses split at the lifetime');}
 
-// 2c. OpenAI weighting: a miss is new input at 1x (no cache-write charge), cached input 0.1x; Grok the same with 0.25x
-{const p=h.priceFor('codex_aside_local','gpt-6.1-terra');assert.equal(p.write,1);assert.equal(p.read,0.1);assert.equal(p.known,false,'output price unknown, input rule known');
- assert.equal(h.priceFor('codex_cli_local','o4-mini').write,1);assert.equal(h.priceFor('grok_aside_local','grok-5').read,0.25);assert.equal(h.priceFor('grok_aside_local','grok-5').write,1);
+// 2c. OpenAI weighting: a miss is new input at 1x input price (no cache-write charge), cached input at its own price
+{const U=1e-6;const p=h.priceFor('codex_aside_local','gpt-5.6-sol');assert.equal(p.write,p.in);assert.ok(Math.abs(p.read-0.4*U)<1e-15);
+ assert.equal(h.priceFor('grok_aside_local','grok-4.6').write,h.priceFor('grok_aside_local','grok-4.6').in);
  const miss=[{session:'o',model:'gpt-5.6-sol',at:T0,input:0,output:0,cacheRead:100000,cacheCreate:0},{session:'o',model:'gpt-5.6-sol',at:T0+30*M,input:101000,output:0,cacheRead:0,cacheCreate:0}];
- const a=h.analyze('codex_aside_local',miss);assert.equal(a.total,100000*0.1+101000,'miss = 1x input, no write surcharge');assert.equal(a.writeRatio,1);
- const cw=h.analyze('codex_aside_local',[{session:'o',model:'gpt-5.6-sol',at:T0,input:10,output:0,cacheRead:0,cacheCreate:1000}]);assert.equal(cw.total,10+1000,'reported cache writes also 1x');
- ok('OpenAI and Grok weighting: miss 1x input, cached 0.1x (Grok 0.25x), no cache-write surcharge');}
+ const a=h.analyze('codex_aside_local',miss);assert.ok(Math.abs(a.total-(100000*0.4+101000*4)*U)<1e-12,'miss = 1x input, no write surcharge');assert.equal(a.writeRatio,1);
+ const cw=h.analyze('codex_aside_local',[{session:'o',model:'gpt-5.6-sol',at:T0,input:10,output:0,cacheRead:0,cacheCreate:1000}]);assert.ok(Math.abs(cw.total-(10+1000)*4*U)<1e-12,'reported cache writes also 1x input');
+ ok('OpenAI and Grok weighting: miss 1x input, cached at the listed cached price, no cache-write surcharge');}
+
+// 2e. cold restart saving = what was paid on the miss minus a cache read of the previous context and the new input paid anyway
+{const U=1e-6,ast=(gap,rows)=>{let at=T0;return rows.map((r,i)=>({session:'z',model:'gpt-6-astra',at:at+=(i?gap:0)*M,output:0,cacheCreate:0,...r}));};
+ // Astra's case: previous context 2만, then 10만 of new input after 90 minutes with no cache: only the 2만 could have been read
+ const a=h.analyze('codex_aside_local',ast(90,[{input:20000,cacheRead:0},{input:100000,cacheRead:0}]));
+ assert.equal(a.cold.n,1);assert.ok(Math.abs(a.cold.burden-100000*10*U)<1e-12,'the miss paid 10만 x input');
+ assert.ok(Math.abs(a.cold.save-20000*(10-1)*U)<1e-12,'saving capped by the previous context: 2만 x (input - cached)');
+ // the review's synthetic: same session, 90 minutes apart, 10만 input each, never cached: each miss could only have re-read 10만
+ const b=h.analyze('codex_aside_local',ast(90,[0,1,2,3].map(()=>({input:100000,cacheRead:0}))));
+ assert.equal(b.cold.n,3);assert.ok(b.cold.save<b.cold.burden&&Math.abs(b.cold.save-3*100000*9*U)<1e-12,'never more than the previous context, read at the cached price');
+ // part of the context was read from cache anyway: only the rest counts
+ const c=h.analyze('codex_aside_local',ast(90,[{input:100000,cacheRead:0},{input:70000,cacheRead:40000}]));assert.ok(Math.abs(c.cold.save-60000*9*U)<1e-12,'already-read part not counted twice');
+ // Claude: the miss rewrites at 2x; the saving is the rewrite of the previous context minus its cache read
+ const d=h.analyze('claude_cli_local',[{session:'y',model:'claude-opus-5-5',at:T0,input:0,output:0,cacheRead:0,cacheCreate:50000,cw5m:0,cw1h:50000},{session:'y',model:'claude-opus-5-5',at:T0+90*M,input:0,output:0,cacheRead:0,cacheCreate:60000,cw5m:0,cw1h:60000}]);
+ assert.ok(Math.abs(d.cold.save-50000*(8-0.2)*U)<1e-12,'Claude: previous 5만 at 1-hour write price minus cache read; the new 1만 is written either way');
+ assert.equal(h.coldSaving({burden:0,tokens:0,prevCtx:1,r:{_p:{read:0}}}),0);
+  // misses that paid well over 3% but could have spared little (small previous context, large new input): no advice
+ {let at=T0;const rows=[];const push=(gap,r)=>rows.push({session:'w',model:'gpt-6-astra',at:at+=gap*M,output:0,cacheCreate:0,...r});
+  push(0,{input:30000,cacheRead:0});for(let i=1;i<200;i++)push(1,{input:1000,cacheRead:30000+(i-1)*1000});
+  for(let k=0;k<3;k++){at+=864e5;push(0,{input:20000,cacheRead:0});push(90,{input:400000,cacheRead:0});}
+  const inp={sources:{codex_aside_local:{name:'Aside Codex',...h.analyze('codex_aside_local',rows),compactCurve:null}},excluded:[],settings:{}};const s0=inp.sources.codex_aside_local;
+  assert.equal(s0.cold.n,3);assert.ok(100*s0.cold.burden/s0.total>=3&&100*s0.cold.save/s0.total<3,'paid over 3%, saving under 3%');
+  assert.ok(!h.rules(inp).some(f=>f.id.startsWith('cold')),'the advice disappears under the 3% threshold');}
+ ok('cold restart saving: miss paid minus cache read of the previous context and new input, capped by the previous context');}
 
 // 2d. compaction: the summary call is counted; advice only when the saving is 10%+ and survives the unknowns
 {const big2=Array.from({length:2},(_,i)=>conv({session:'Q'+i,n:900,step:2500,limit:850000,post:75000,t0:T0+i*864e5}));
  const a=h.analyze('claude_aside_local',big2.flat());
  const T=a.compact.pre,r0=h.replay(a,T,{summaryOut:0}),r1=h.replay(a,T),rf=h.replay(a,T,{summaryIn:'full'}),rr=h.replay(a,T,{reread:h.REREAD_TEST});
- assert.equal(Math.round(r1.total-r0.total),Math.round(r1.n*h.SUMMARY_OUT*a.outRatio),'summary output counted at the output ratio');
+ assert.ok(Math.abs((r1.total-r0.total)-r1.n*h.SUMMARY_OUT*a.price.out)<1e-9,'summary output counted at the output price');
  assert.ok(rf.total>r1.total,'a summary call that reads at 1x costs more');assert.ok(rr.total>r1.total,'re-reading after each summary costs more');
  const solid={per:[{saveShare:20,saveFullShare:18,saveRereadShare:19}]},thin={per:[{saveShare:12,saveFullShare:5,saveRereadShare:-17}]},small={per:[{saveShare:8,saveFullShare:8,saveRereadShare:8}]};
  assert.equal(h.compactionSolid(solid),true);assert.equal(h.compactionSolid(thin),false,'depends on the unknowns');assert.equal(h.compactionSolid(small),false,'under 10%');
@@ -110,7 +145,14 @@ const F=h.rules(input);
  assert.ok(/Opus 5\.5 100%/.test(ref.table[0].models)&&!/부담|비중/.test(JSON.stringify(ref)),'model mix is a neutral cell in plain words');assert.ok(ref.notes.some(i=>/Antigravity는 캐시 기록이 없어/.test(i)),'unsupported sources named once');
  assert.ok(ref.notes.some(i=>/5분 기준 1\.25배/.test(i)),'unknown lifetime: 1.25 and said so');
  {const two=inputOf({claude_aside_local:conv({session:'a',n:50}),codex_aside_local:conv({session:'b',n:50,model:'gpt-6-astra',openai:true}),codex_cli_local:conv({session:'c',n:50,model:'gpt-6-astra',openai:true})});two.sources.codex_cli_local.name='Codex 앱';
-  const r2=h.reference(two,[]);assert.equal(r2.table.length,3,'one row per source');assert.equal(r2.notes.filter(x=>/공개 요금이 없어/.test(x)).length,1,'unknown-price models noted once');
+  const r2=h.reference(two,[]);assert.equal(r2.table.length,3,'one row per source');assert.equal(r2.notes.filter(x=>/가격 미상/.test(x)).length,0,'every model priced: no note');
+  assert.ok(r2.table.every(r=>/^(\d+%|1% 미만)$/.test(r.used)),'한도를 쓴 양 is a share, never a money or token amount');
+  const used=r2.table.map(r=>r.used==='1% 미만'?0:parseInt(r.used,10));assert.ok(Math.abs(used.reduce((x,y)=>x+y,0)-100)<=2,'shares of all sources add up to 100');
+  const nova=inputOf({codex_aside_local:conv({session:'n1',n:50,model:'gpt-7-nova',openai:true}),codex_cli_local:[...conv({session:'n2',n:50,model:'gpt-7-nova',openai:true}),...conv({session:'n3',n:50,model:'gpt-6-astra',openai:true})]});
+  nova.sources.codex_cli_local.name='Codex 앱';const r3=h.reference(nova,[]);
+  assert.equal(r3.notes.filter(x=>/GPT-7 Nova는 공개 요금을 찾지 못해 가격 미상으로 두고 비율에서 뺐어요/.test(x)).length,1,'unpriced models noted once');
+  assert.ok(r3.table.find(r=>r.source==='Codex 앱').models.startsWith('GPT-6 Astra 100%, GPT-7 Nova 가격 미상('),'unpriced model listed with its tokens after the shares');
+  assert.equal(r3.table.find(r=>r.source==='Aside Codex').used,'가격 미상','a source with no priced model has no share');
   const all=r2.notes.join(' ');for(const sent of all.split(/[.]/).map(x=>x.trim()).filter(Boolean))assert.equal(all.split(sent).length-1,1,'no repeated sentence: '+sent);}
  // small cold-restart cost is not flagged
  const few=inputOf({claude_aside_local:[...conv({session:'big',n:2000,step:300}),...conv({session:'one',n:60,cold:[30]})]});assert.ok(!h.rules(few).some(f=>f.id.startsWith('cold')),'below 3% of the total: no item');

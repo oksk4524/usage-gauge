@@ -70,9 +70,8 @@ enum MenuBarStrip {
         return out
     }
 
-    // a shorter window counts as used up below 2% (the service stops answering before an exact 0)
-    static let usedUpBelow = 2.0
-    static func isUsedUp(_ w: Window) -> Bool { w.remaining < usedUpBelow }
+    // a shorter window counts as used up only at 0 left; 1% left is still room and shows as "1"
+    static func isUsedUp(_ w: Window) -> Bool { w.remaining <= 0 }
 
     // temporarily blocked: the weekly limit still has room but a shorter window is used up; the latest refill wins
     static func blocked(_ q: Quota) -> Window? {

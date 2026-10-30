@@ -212,7 +212,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ag = a
             }
         } else if let q = r.quotas.first {
-            qs[p.rawValue] = Merge.merge(qs[p.rawValue], q, staleAfterMin: Merge.staleMainMin, hasLogin: true)
+            if p == .claude && q.loginGeneration != Usage.claudeGeneration() {
+                // the account changed after this lookup began: its answer may be the old account's, so ask again
+                Log.write("refresh Claude [\(why)] dropped: it began before the account changed")
+                Sched.request(&st[p]!, gap: RefreshPolicy.minGap(p), reason: "계정 바뀜")
+            } else {
+                qs[p.rawValue] = Merge.merge(qs[p.rawValue], q, staleAfterMin: Merge.staleMainMin, hasLogin: true)
+            }
         }
         loaded = true
         let secs = String(format: "%.1f", now.timeIntervalSince(started))
@@ -226,9 +232,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusItem(); updateModel()
     }
 
-    // the refresh button: every service now (10 s floor), even out of a network backoff; a 429 block is kept
+    // the refresh button: every service now (10 s floor), even out of a network backoff; a 429 block is kept.
+    // Claude's kept login is dropped, so the next lookup reads the login again (a switched account shows at once), and
+    // the signed-in account is checked now, so a lookup already running for the old account is not shown.
     func refresh(force: Bool) {
         Usage.keychainDenied = false
+        Usage.forgetClaudeLogin()
+        DispatchQueue.global(qos: .utility).async { Usage.noteClaudeAccount(Usage.claudeConfigAccount()) }
         let now = Date()
         for p in Provider.allCases {
             Sched.clearNetworkBackoff(&st[p]!, now: now)
@@ -237,11 +247,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pump()
     }
 
-    // wake, unlock, network back: a failed lookup is retried now; the rest within their minimum gap
+    // wake, unlock, network back: a failed lookup is retried (within its minimum gap); Antigravity is left alone
     func wokeOrOnline(_ why: String) {
-        let now = Date()
-        for p in Provider.allCases { Sched.clearNetworkBackoff(&st[p]!, now: now) }
-        for p in RefreshPolicy.followsGeneralTriggers { Sched.request(&st[p]!, gap: RefreshPolicy.minGap(p), reason: why) }
+        Sched.generalTrigger(&st, now: Date(), reason: why)
         watcher.refreshRoots()
         pump()
     }
@@ -424,7 +432,7 @@ enum HabitGate {
 }
 
 // shown in the log at launch, so a rebuilt and reinstalled app can be told apart from the previous one
-enum AppVersion { static let string = "1.0.3" }
+enum AppVersion { static let string = "1.0.4" }
 
 @main
 struct UsageGaugeMain {
