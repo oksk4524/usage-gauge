@@ -1,0 +1,316 @@
+import AppKit
+import SwiftUI
+import Foundation
+
+// UsageGauge for macOS: a menu bar item showing the lowest weekly limit left across Codex, Claude, Grok
+// and Antigravity. Click for per-service details, the local usage dashboard, refresh and quit.
+
+enum Service: Int, CaseIterable { case codex, claude, grok }
+let serviceNames = ["Codex", "Claude", "Grok"]
+
+// Merge / SameLogin carried over from UsageGauge.cs: a value is only carried over when the failing lookup
+// provably used the same login, never across an account switch.
+enum Merge {
+    static let staleMainMin = 12.0, staleAgMin = 35.0
+
+    static func sameLogin(_ prev: Quota, _ fresh: Quota, _ hasLogin: Bool) -> Bool {
+        if !hasLogin { return true }                                    // Antigravity: no identity is exposed
+        if let a = prev.accountKey, let b = fresh.accountKey { return a == b }
+        if let a = prev.credKey, let b = fresh.credKey { return a == b }
+        return false                                                    // login unreadable or unidentified: don't guess
+    }
+    static func merge(_ prev: Quota, _ fresh: Quota, staleAfterMin: Double, hasLogin: Bool) -> Quota {
+        if fresh.ok {
+            fresh.lastOk = Date()
+            if prev.ok && hasLogin {
+                let knownBoth = prev.accountKey != nil && fresh.accountKey != nil
+                if knownBoth && prev.accountKey != fresh.accountKey {
+                    fresh.accountChanged = Date()
+                    Log.write(fresh.name + " account changed: now showing the signed-in account")
+                } else if knownBoth { fresh.accountChanged = prev.accountChanged }
+                // same token, profile lookup failed this time: the account is provably unchanged
+                if fresh.accountKey == nil, let c = prev.credKey, c == fresh.credKey {
+                    fresh.accountKey = prev.accountKey; fresh.account = prev.account; fresh.accountChanged = prev.accountChanged
+                }
+            }
+            return fresh
+        }
+        if prev.ok && sameLogin(prev, fresh, hasLogin) {
+            prev.failing = true; prev.error = fresh.error
+            // network blips heal by themselves; auth/format errors won't, so show those right away
+            let age = prev.lastOk.map { Date().timeIntervalSince($0) / 60 } ?? .infinity
+            prev.stale = !fresh.transient || age >= staleAfterMin
+            Log.write(prev.name + " fetch failed: " + (fresh.error ?? ""))
+            return prev
+        }
+        if prev.ok { Log.write(fresh.name + " failed for the current login (previous value from another or unknown login dropped): " + (fresh.error ?? "")) }
+        else if let e = fresh.error, !fresh.noLogin, !fresh.notInstalled { Log.write(fresh.name + " failed: " + e) }
+        if fresh.account == nil, let k = fresh.accountKey, k == prev.accountKey { fresh.account = prev.account }
+        return fresh
+    }
+    // the value is old even without a failure (e.g. the Mac slept)
+    static func showStale(_ q: Quota, ag: Bool) -> Bool {
+        guard q.ok else { return false }
+        if q.stale { return true }
+        guard let t = q.lastOk else { return false }
+        return Date().timeIntervalSince(t) / 60 >= (ag ? staleAgMin : staleMainMin)
+    }
+}
+
+enum Fetch {
+    static let refreshEvery: TimeInterval = 5 * 60, agEvery: TimeInterval = 15 * 60
+    static func main() -> [Quota] {
+        let jobs: [() -> Quota] = [Usage.codex, Usage.claude, Usage.grok]
+        var out = [Quota?](repeating: nil, count: 3)
+        let lock = NSLock(), group = DispatchGroup()
+        for (i, job) in jobs.enumerated() {
+            group.enter()
+            DispatchQueue.global(qos: .utility).async {
+                let q = job(); q.name = serviceNames[i]
+                lock.lock(); out[i] = q; lock.unlock(); group.leave()
+            }
+        }
+        _ = group.wait(timeout: .now() + Usage.timeout * 2 + 4)
+        lock.lock(); defer { lock.unlock() }
+        return (0..<3).map { i in
+            if let q = out[i] { return q }
+            let q = Quota.fail("시간 초과", transient: true); q.name = serviceNames[i]; return q
+        }
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    var item: NSStatusItem!
+    var qs: [Quota] = serviceNames.map { n in let q = Quota(); q.name = n; return q }
+    var ag: [Quota] = []
+    var lastAg: Date?
+    var busy = false, loaded = false
+    var timer: Timer?
+    var lastRefresh: Date?
+    var habitRunning = false
+    let popover = NSPopover()
+    let model = PopoverModel()
+    var quitMenu: NSMenu!
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleURL(_:reply:)),
+                                                     forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let b = item.button {
+            b.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold)
+            b.imagePosition = .imageLeft
+            b.target = self; b.action = #selector(statusClicked(_:))
+            b.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
+        // right click: a quiet menu with "종료" only
+        quitMenu = NSMenu()
+        let quit = NSMenuItem(title: "종료", action: #selector(quit), keyEquivalent: "q"); quit.target = self
+        quitMenu.addItem(quit)
+
+        model.onDetails = { [weak self] in self?.popover.performClose(nil); self?.openDashboard() }
+        model.onHabit = { [weak self] in self?.runHabit(openWhenDone: true) }
+        model.onRefresh = { [weak self] in self?.refresh(force: true) }
+        let host = NSHostingController(rootView: PopoverView(model: model))
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
+        popover.behavior = .transient
+        popover.animates = false
+        // the approved design has no arrow; hide it only where AppKit offers the switch
+        if popover.responds(to: NSSelectorFromString("setShouldHideAnchor:")) { popover.setValue(true, forKey: "shouldHideAnchor") }
+
+        updateStatusItem(); updateModel()
+        refresh(force: true)
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.tick() }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.refresh(force: false, afterWake: true)
+        }
+    }
+
+    @objc func statusClicked(_ sender: NSStatusBarButton) {
+        if NSApp.currentEvent?.type == .rightMouseUp || NSApp.currentEvent?.modifierFlags.contains(.control) == true {
+            popover.performClose(nil)
+            item.menu = quitMenu; item.button?.performClick(nil); item.menu = nil   // shows the menu at the item
+            return
+        }
+        if popover.isShown { popover.performClose(nil); return }
+        updateModel()
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+    }
+
+    func tick() {
+        guard let last = lastRefresh else { refresh(force: false); return }
+        if Date().timeIntervalSince(last) >= Fetch.refreshEvery { refresh(force: false) } else { updateModel() }
+    }
+
+    func refresh(force: Bool, afterWake: Bool = false) {
+        if busy { return }
+        busy = true; model.busy = true
+        if force { Usage.keychainDenied = false }
+        let includeAg = force || afterWake || lastAg == nil || Date().timeIntervalSince(lastAg!) >= Fetch.agEvery
+        DispatchQueue.global(qos: .utility).async {
+            let got = Fetch.main()
+            let agGot: [Quota]? = includeAg ? Antigravity.fetch() : nil
+            DispatchQueue.main.async { self.apply(got, agGot) }
+        }
+    }
+
+    func apply(_ got: [Quota], _ agGot: [Quota]?) {
+        for i in 0..<3 { qs[i] = Merge.merge(qs[i], got[i], staleAfterMin: Merge.staleMainMin, hasLogin: true) }
+        if let a = agGot {
+            lastAg = Date()
+            if a.count == ag.count && a.count == 2 {
+                ag = (0..<2).map { Merge.merge(ag[$0], a[$0], staleAfterMin: Merge.staleAgMin, hasLogin: false) }
+            } else {
+                for q in a where q.ok { q.lastOk = Date() }
+                ag = a
+            }
+        }
+        lastRefresh = Date(); busy = false; loaded = true
+        DashboardFeed.write(qs)
+        updateStatusItem(); updateModel()
+    }
+
+    var rings: [Quota] { Design.ringQuotas(main: qs, ag: ag) }
+
+    // menu bar (variant C): every service with a value as logo + small remaining bar + number (or refill day),
+    // in the fixed order Codex, Claude, Grok, Gemini 4 Argon, Antigravity; see MenuBarStrip.
+    // Before the first lookup, or when nothing was read: the grey empty ring as before.
+    func updateStatusItem() {
+        guard let b = item.button else { return }
+        let r = rings
+        let strip = loaded ? MenuBarStrip.entries(main: qs, ag: ag) : []
+        if !strip.isEmpty {
+            b.image = MenuBarStrip.image(strip)
+            b.title = ""
+            b.toolTip = MenuBarStrip.tooltip(strip)
+            return
+        }
+        let i = loaded ? Design.lowest(r) : nil
+        let rem = i.map { r[$0].remaining }, logo = i.map { Design.logoKeys[$0] }
+        let img = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { rect in
+            let dark = NSAppearance.currentDrawing().bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            Design.menuBarRing(remaining: rem, logoKey: logo, dark: dark).draw(in: rect)
+            return true
+        }
+        b.image = img
+        b.title = rem.map { Usage.remainingNumber($0) + "%" } ?? ""
+        b.toolTip = i.map { "가장 급한 한도: \(r[$0].name) \(Usage.remainingNumber(r[$0].remaining))% 남음" }
+            ?? (loaded ? "UsageGauge: 읽은 한도가 없어요" : "UsageGauge: 불러오는 중")
+    }
+
+    func updateModel() {
+        let r = rings
+        model.gauges = loaded ? zip(r, Design.logoKeys).map { Design.gauge($0, logo: $1) }
+            : Design.logoKeys.map { k in let q = Quota(); q.error = "확인 전"; return Design.gauge(q, logo: k) }
+        model.header = Design.header(lastCheck: lastRefresh, main: qs)
+        model.todo = Design.loadTodo()
+        model.busy = busy
+        model.habitRunning = habitRunning
+    }
+
+    @objc func quit() { NSApp.terminate(nil) }
+
+    @objc func openDashboard() {
+        if FileManager.default.fileExists(atPath: Paths.page) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: Paths.page)); return
+        }
+        alert("사용량 상세 화면이 아직 없어요.",
+              "저장소의 mac/install-dashboard.sh 를 한 번 실행하면 화면이 만들어지고, 자동 갱신을 켜면 30분마다 새로 만들어져요.")
+    }
+
+    func alert(_ title: String, _ text: String) {
+        popover.performClose(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        let a = NSAlert(); a.messageText = title; a.informativeText = text; a.alertStyle = .informational
+        a.addButton(withTitle: "확인"); a.runModal()
+    }
+
+    // ---- usagegauge://habit-check (the dashboard's "AI로 진단하기" link; that page reloads itself) ----
+    @objc func handleURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
+        guard let s = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue else { return }
+        guard s.range(of: "^usagegauge://habit-check/?$", options: [.regularExpression, .caseInsensitive]) != nil else {
+            Log.write("ignored url scheme request"); return
+        }
+        runHabit(openWhenDone: false)
+    }
+    // the popover's "AI 진단": same run; nothing is open yet, so the rebuilt page is shown when it is done
+    func runHabit(openWhenDone: Bool) {
+        if habitRunning { return }
+        guard FileManager.default.fileExists(atPath: Paths.refreshScript), let node = nodePath() else {
+            alert("AI 진단을 실행할 수 없어요.", "mac/install-dashboard.sh 로 사용량 상세 화면을 먼저 준비해 주세요. (Node.js 22.13 이상 필요)")
+            return
+        }
+        habitRunning = true; model.habitRunning = true
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: node)
+        p.arguments = ["--no-warnings", Paths.refreshScript, "--habit", "usagegauge://habit-check"]
+        p.currentDirectoryURL = URL(fileURLWithPath: Paths.data)
+        p.standardInput = FileHandle.nullDevice; p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+        p.terminationHandler = { [weak self] proc in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.habitRunning = false; self.model.habitRunning = false
+                Log.write("habit check finished (exit \(proc.terminationStatus))")
+                self.updateModel()
+                if openWhenDone && proc.terminationStatus == 0 { self.openDashboard() }
+            }
+        }
+        do { try p.run() } catch { habitRunning = false; model.habitRunning = false; Log.write("habit check: could not start node") }
+    }
+    func nodePath() -> String? {
+        if let s = try? String(contentsOfFile: Paths.nodePathFile, encoding: .utf8) {
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if FileManager.default.isExecutableFile(atPath: t) { return t }
+        }
+        for p in ["/opt/homebrew/bin/node", "/usr/local/bin/node"] where FileManager.default.isExecutableFile(atPath: p) { return p }
+        return nil
+    }
+}
+
+// `UsageGauge --probe`: one lookup printed as JSON lines (masked account, no tokens). For checks from a terminal.
+func runProbe() {
+    let main = Fetch.main(), ag = Antigravity.fetch()
+    let iso = DashboardFeed.iso
+    for q in main + ag {
+        var o: [String: Any] = ["service": q.name, "ok": q.ok]
+        if q.ok { o["remaining"] = (q.remaining * 100).rounded() / 100; o["resetsAt"] = q.resetsAt.map(iso) ?? NSNull(); o["account"] = DashboardFeed.mask(q.account) ?? NSNull() }
+        else { o["error"] = q.error ?? NSNull(); o["noLogin"] = q.noLogin; o["notInstalled"] = q.notInstalled }
+        if let e = q.extra { o["extra"] = e }
+        print(DashboardFeed.json(o))
+    }
+}
+
+// `UsageGauge --render-preview <folder>`: the popover as PNGs (mock values dark/light + this Mac's real state).
+@MainActor
+func renderPreview(_ dir: String) {
+    _ = NSApplication.shared
+    let main = Fetch.main()
+    for q in main where q.ok { q.lastOk = Date() }
+    let ag = Antigravity.fetch()
+    let rings = Design.ringQuotas(main: main, ag: ag)
+    let m = PopoverModel()
+    m.gauges = zip(rings, Design.logoKeys).map { Design.gauge($0, logo: $1) }
+    m.header = Design.header(lastCheck: Date(), main: main)
+    m.todo = Design.loadTodo()
+    let low = Design.lowest(rings)
+    for p in Preview.render(to: dir, real: (m, low.map { rings[$0].remaining }, low.map { Design.logoKeys[$0] })) { print(p) }
+}
+
+@main
+struct UsageGaugeMain {
+    static func main() {
+        if CommandLine.arguments.contains("--probe") { runProbe(); return }
+        if let i = CommandLine.arguments.firstIndex(of: "--render-preview"), i + 1 < CommandLine.arguments.count {
+            renderPreview(CommandLine.arguments[i + 1]); return
+        }
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.accessory)
+        withExtendedLifetime(delegate) { app.run() }
+    }
+}

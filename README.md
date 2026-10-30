@@ -28,6 +28,20 @@ To share it as one file, `install.ps1 -Package` builds `dist\UsageGauge-Setup.ex
 warns on first run (*More info > Run anyway*).
 Drag to move. Right-click for refresh, gauges, language, start with Windows, reset position and the error log.
 
+## macOS
+
+The macOS menu bar version lives in [`mac/`](mac/README.md) (Swift, built with the Command Line Tools; no Xcode project).
+
+```sh
+mac/build.sh     # builds mac/build/UsageGauge.app (ad-hoc signed, not notarized); installs nothing
+mac/test.sh      # 85 logic tests + collector feed check
+```
+
+Copy `mac/build/UsageGauge.app` to `/Applications` yourself. `mac/install-dashboard.sh` is the macOS counterpart of
+`tools/usage-insights-collector/install-dashboard.ps1`. The collector keeps its state in
+`~/Library/Application Support/UsageGauge` on macOS (`%LOCALAPPDATA%\UsageGauge` on Windows, unchanged).
+Rebuilding the app resets the keychain "Always Allow" for Claude Code's login item, so macOS asks once more.
+
 ## How it works
 
 | Gauge | Source | Login read from |

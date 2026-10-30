@@ -82,7 +82,9 @@ function prompt(findings){return `아래는 한 사람의 AI 토큰 사용 기�
 
 항목(코드 판정, 영향 큰 순):
 ${JSON.stringify(findings.map(f=>({criterion:f.fixed.criterion,facts:f.facts,draft:{title:f.fixed.title,why:f.fixed.why,how:f.fixed.how}})),null,1)}`;}
-function which(names){for(const n of names){for(const dir of (process.env.PATH||'').split(path.delimiter)){const p=path.join(dir,n);if(dir&&fs.existsSync(p))return p;}}return null;}
+// macOS: launchd and the menu bar app start with a minimal PATH, so also look where Homebrew and the official installers put the CLIs
+const EXTRA_DIRS=process.platform==='darwin'?[path.join(os.homedir(),'.local','bin'),'/opt/homebrew/bin','/usr/local/bin']:[];
+function which(names){for(const n of names){for(const dir of [...(process.env.PATH||'').split(path.delimiter),...EXTRA_DIRS]){const p=path.join(dir,n);if(dir&&fs.existsSync(p))return p;}}return null;}
 function runCli(exe,args,input,cwd,timeoutMs){return new Promise(res=>{let out='',err='',done=false;const shell=/\.(cmd|bat)$/i.test(exe);
   const p=spawn(exe,args,{cwd,windowsHide:true,shell});const t=setTimeout(()=>{if(!done){done=true;try{p.kill();}catch{}res({ok:false,reason:'timeout'});}},timeoutMs);
   p.stdout.on('data',d=>{out+=d;if(out.length>200000)p.kill();});p.stderr.on('data',d=>{err+=d;if(err.length>200000)err=err.slice(-100000);});
@@ -92,9 +94,10 @@ function runCli(exe,args,input,cwd,timeoutMs){return new Promise(res=>{let out='
 function parseArray(text){const a=String(text||'').indexOf('['),b=String(text||'').lastIndexOf(']');if(a<0||b<a)return null;try{const v=JSON.parse(text.slice(a,b+1));return Array.isArray(v)?v:null;}catch{return null;}}
 async function askModel(findings,{workDir,home=os.homedir(),timeoutMs=150000}={}){
   fs.mkdirSync(workDir,{recursive:true});const p=prompt(findings);
-  const claude=[path.join(home,'.local','bin','claude.exe'),which(['claude.exe','claude.cmd'])].find(x=>x&&fs.existsSync(x));
+  const mac=process.platform==='darwin';
+  const claude=(mac?[path.join(home,'.local','bin','claude'),which(['claude'])]:[path.join(home,'.local','bin','claude.exe'),which(['claude.exe','claude.cmd'])]).find(x=>x&&fs.existsSync(x));
   if(claude){const r=await runCli(claude,['-p','--model','haiku','--output-format','text','--disallowedTools','Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,Task,NotebookEdit'],p,workDir,timeoutMs);const arr=r.ok?parseArray(r.out):null;if(arr)return {model:'Claude Haiku',items:arr};}
-  const codex=which(['codex.cmd','codex.exe']);
+  const codex=which(mac?['codex']:['codex.cmd','codex.exe']);
   if(codex){const r=await runCli(codex,['exec','--model','gpt-6-luna','--skip-git-repo-check','--sandbox','read-only','-'],p,workDir,timeoutMs);const arr=r.ok?parseArray(r.out):null;if(arr)return {model:'GPT-6 Luna',items:arr};}
   return {model:null,items:[]};}
 
