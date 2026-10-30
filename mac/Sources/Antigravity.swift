@@ -29,7 +29,13 @@ enum Antigravity {
         guard let agy = findAgy() else { return notInstalled() }
         let work = (NSTemporaryDirectory() as NSString).appendingPathComponent("UsageGauge-agy")
         try? FileManager.default.createDirectory(atPath: work, withIntermediateDirectories: true)
-        let (fail, parsed) = runCli(agy, ["-p", "/usage", "--output-format", "json", "--print-timeout", "25s"], work)
+        // agy's own log of this run goes to our folder (official --log-file flag) and is deleted right after
+        let runLog = (work as NSString).appendingPathComponent("agy-\(getpid())-\(Int(Date().timeIntervalSince1970)).log")
+        let started = Date()
+        let (fail, parsed) = runCli(agy, ["-p", "/usage", "--output-format", "json", "--print-timeout", "25s", "--log-file", runLog], work)
+        try? FileManager.default.removeItem(atPath: runLog)
+        let removed = AgyLogs.cleanUp(dir: AgyLogs.dir, workDir: work, runStart: started, now: Date())
+        if removed.run + removed.old > 0 { Log.write("agy logs: removed \(removed.run) from this run, \(removed.old) older than 7 days") }
         func both(_ m: String, transient: Bool = false) -> [Quota] {
             let a = Quota.fail(m, transient: transient), b = Quota.fail(m, transient: transient)
             a.name = geminiName; b.name = otherName; return [a, b]
@@ -92,6 +98,10 @@ enum Antigravity {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: exe); p.arguments = args
         p.currentDirectoryURL = URL(fileURLWithPath: workDir)
+        // the documented switch for agy's background self-updater (a second ~150 MB process per run); only "true" works
+        var env = ProcessInfo.processInfo.environment
+        env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "true"
+        p.environment = env
         p.standardInput = FileHandle.nullDevice
         let outPipe = Pipe(), errPipe = Pipe()
         p.standardOutput = outPipe; p.standardError = errPipe
@@ -135,5 +145,53 @@ enum Antigravity {
         t = t.replacingOccurrences(of: "[A-Za-z0-9_\\-.=+/]{32,}", with: "…", options: .regularExpression)   // anything token-like
         t = t.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
         return t.count > 300 ? String(t.prefix(300)) + "…" : t
+    }
+}
+
+// agy writes ~/.gemini/antigravity-cli/log/cli-YYYYMMDD_HHMMSS.log for every run. Ours go to --log-file, so normally
+// nothing lands there; if one does anyway (an agy that ignores the flag), it is removed when it was created during
+// our run and names our work folder as its workspace (read from its first 64 KB). Separately, agy CLI logs older than 7 days are pruned.
+// Only that folder, only files named like agy's CLI logs; never other agy files.
+enum AgyLogs {
+    static var dir: String { (Usage.home as NSString).appendingPathComponent(".gemini/antigravity-cli/log") }
+    static let keepDays: TimeInterval = 7 * 24 * 3600
+
+    static func isCliLog(_ name: String) -> Bool {
+        name.range(of: "^cli-[0-9]{8}_[0-9]{6}(\\.[0-9]+)?\\.log$", options: .regularExpression) != nil
+    }
+    // which files to delete: (made by this run, older than 7 days). `head` returns the first bytes of a file.
+    static func pick(_ files: [(name: String, created: Date, modified: Date)], workDir: String, runStart: Date, now: Date,
+                     head: (String) -> String) -> (run: [String], old: [String]) {
+        var run: [String] = [], old: [String] = []
+        let marks = [workDir, "/private" + workDir]
+        for f in files where isCliLog(f.name) {
+            if f.modified < now.addingTimeInterval(-keepDays) { old.append(f.name); continue }
+            if f.created >= runStart.addingTimeInterval(-2) && f.created <= now.addingTimeInterval(2) {
+                let h = head(f.name)
+                if marks.contains(where: { h.contains("workspace " + $0) || h.contains("workspaceDirs=[" + $0) }) { run.append(f.name) }
+            }
+        }
+        return (run, old)
+    }
+    @discardableResult
+    static func cleanUp(dir: String, workDir: String, runStart: Date, now: Date) -> (run: Int, old: Int) {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return (0, 0) }
+        var files: [(name: String, created: Date, modified: Date)] = []
+        for n in names where isCliLog(n) {
+            let path = (dir as NSString).appendingPathComponent(n)
+            guard let a = try? fm.attributesOfItem(atPath: path), (a[.type] as? FileAttributeType) == .typeRegular,
+                  let m = a[.modificationDate] as? Date else { continue }
+            files.append((n, (a[.creationDate] as? Date) ?? m, m))
+        }
+        let picked = pick(files, workDir: workDir, runStart: runStart, now: now) { n in
+            guard let h = FileHandle(forReadingAtPath: (dir as NSString).appendingPathComponent(n)) else { return "" }
+            defer { try? h.close() }
+            return String(decoding: h.readData(ofLength: 65536), as: UTF8.self)
+        }
+        var run = 0, old = 0
+        for n in picked.run where (try? fm.removeItem(atPath: (dir as NSString).appendingPathComponent(n))) != nil { run += 1 }
+        for n in picked.old where (try? fm.removeItem(atPath: (dir as NSString).appendingPathComponent(n))) != nil { old += 1 }
+        return (run, old)
     }
 }

@@ -10,6 +10,7 @@ final class PopoverModel: ObservableObject {
     @Published var todo: Design.Todo?
     @Published var busy = false
     @Published var habitRunning = false
+    @Published var habitWait: String?   // "N분 뒤에 다시 돌릴 수 있어요" within 10 min of the last run
     var onDetails: () -> Void = {}
     var onHabit: () -> Void = {}
     var onRefresh: () -> Void = {}
@@ -120,7 +121,9 @@ struct PopoverView: View {
             HStack(spacing: 4) {
                 FooterButton(title: "사용량 상세 보기", color: Color(s.accent), bold: true, action: model.onDetails)
                 FooterButton(title: model.habitRunning ? "진단 중…" : "AI 진단", color: Color(s.sub), bold: false, action: model.onHabit)
-                    .disabled(model.habitRunning)
+                    .opacity(model.habitWait != nil && !model.habitRunning ? 0.5 : 1)
+                    .disabled(model.habitRunning || model.habitWait != nil)
+                    .help(model.habitWait ?? "")
                 Spacer()
                 Button(action: model.onRefresh) {
                     Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .medium)).foregroundColor(Color(s.sub))

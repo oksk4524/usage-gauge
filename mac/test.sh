@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 # script mode: all sources without the @main entry point, then the tests as top-level code
-cat Sources/Usage.swift Sources/Antigravity.swift Sources/DashboardFeed.swift Sources/Design.swift Sources/PopoverView.swift Sources/MenuBarGlyphs.swift Sources/MenuBarStrip.swift > "$TMP/all.swift"
+cat Sources/Usage.swift Sources/Antigravity.swift Sources/DashboardFeed.swift Sources/Design.swift Sources/PopoverView.swift Sources/MenuBarGlyphs.swift Sources/MenuBarStrip.swift Sources/Refresh.swift Sources/Activity.swift > "$TMP/all.swift"
 sed '/^@main/,$d' Sources/App.swift >> "$TMP/all.swift"
 cat Tests/LogicTests.swift >> "$TMP/all.swift"
 swift -swift-version 5 "$TMP/all.swift" "$TMP/limits.jsonl"
