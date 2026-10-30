@@ -321,7 +321,12 @@ body .habit-run{margin-left:auto;font-size:12px;font-weight:700;color:var(--bran
 body .habit-run:hover{background:var(--brand-soft)}
 body .habit-wait{margin:0 0 8px;font-size:12px;color:var(--brand)}
 body .habit-how{margin:3px 0 0;font-size:13px;font-weight:600;color:var(--ink)}
-/* Mobile vertical scrollbar: native scrolling, quiet track, system high-contrast untouched. */
+/* every view on the floor: one ink rule per block, no card boxes (overview already) */
+body #view .panel{border:0;border-top:1px solid var(--ink);border-radius:0;background:none;box-shadow:none;padding-left:0;padding-right:0}
+body #view .records-table th{background:var(--soft)}
+body #view .insight-pair,body #view .insight-stack{gap:24px 44px}
+body #view .source-intro{padding-left:0;padding-right:0}
+body #view .records-summary,body #view .rule-line,body #view .tables-note,body #view .source-grid,body #view .source-list{padding-left:0;padding-right:0}/* Mobile vertical scrollbar: native scrolling, quiet track, system high-contrast untouched. */
 @media (max-width:820px) and (forced-colors:none){
   html{--scroll-thumb:#8993a1;--scroll-thumb-hover:#697687}
   html[data-theme="dark"]{--scroll-thumb:#6f7c8d;--scroll-thumb-hover:#94a2b5}
