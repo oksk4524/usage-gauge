@@ -65,6 +65,21 @@ if !ClaudeKeychain.exists() {
     let l = Usage.readClaude()!
     check(l.access == "abc" && l.expires == Date(timeIntervalSince1970: 1793800000), "claude: credentials file read when no keychain item exists")
 } else { print("SKIP claude file test: a Claude Code keychain item exists on this Mac") }
+
+// ---- keychain through /usr/bin/security (no prompt): decoding, not-found, timeout; the secret is never printed ----
+check(SecurityTool.decode(Data("{\"a\":1}\n".utf8)) == Data("{\"a\":1}".utf8), "security -w: trailing newline dropped")
+check(SecurityTool.decode(Data("7b7d\n".utf8)) == Data("{}".utf8), "security -w: hex output decoded")
+check(SecurityTool.decode(Data("\n".utf8)) == nil, "security -w: empty output is no secret")
+if case .notFound = SecurityTool.findGenericPassword(service: "UsageGauge test item that does not exist \(UUID().uuidString)") { check(true, "security: missing item is notFound (exit 44)") } else { check(false, "security: missing item is notFound (exit 44)") }
+let t0 = Date()
+let slow = SecurityTool.run("/bin/sleep", ["5"], timeout: 0.5)
+check(slow.status == .timedOut && Date().timeIntervalSince(t0) < 3, "security: a hung tool is stopped at the timeout")
+check(SecurityTool.run("/nonexistent/tool", [], timeout: 1).status == .launchFailed, "security: missing tool reported, not a crash")
+if ClaudeKeychain.exists() {
+    if case .found(let d) = ClaudeKeychain.read() {
+        check(!ClaudeKeychain.usedFallback && (try? JSONSerialization.jsonObject(with: d)) != nil, "claude: keychain item read through /usr/bin/security, no Security API fallback")
+    } else { check(false, "claude: keychain item read through /usr/bin/security") }
+} else { print("SKIP claude keychain read: no Claude Code keychain item on this Mac") }
 try? FileManager.default.removeItem(atPath: tmp)
 
 // ---- account change: never carry a value across logins ----
@@ -132,7 +147,7 @@ check(Design.when(atS(10, 31, 0, 0), now: nowS, tz: tzS) == "오늘 밤 12시" &
 let ca = named(Usage.ok(50), "Codex"); ca.accountKey = "codex:x"
 let cb = named(Usage.ok(50), "Claude"); cb.accountKey = "claude:y"
 let cc = named(Quota.fail("시간 초과(네트워크)", transient: true), "Grok"); cc.accountKey = "grok:z"
-check(Design.header(lastCheck: nowS, main: [ca, cb, cc], now: nowS) == "방금 확인 · 계정 3개", "header: signed-in accounts, including one whose lookup failed")
+check(Design.header(lastCheck: nowS, main: [ca, cb, cc], now: nowS) == "방금 확인, 계정 3개", "header: signed-in accounts, including one whose lookup failed")
 check(Design.header(lastCheck: nowS.addingTimeInterval(-300), main: [noLogin, named(Quota.noLoginFound(), "Claude"), named(Quota.noLoginFound(), "Grok")], now: nowS) == "5분 전 확인", "header: no accounts part when nobody is signed in")
 // "지금 할 일": same rule as the dashboard (>= 40만 context, used in the last 6 hours, not a helper), hidden otherwise
 func snap(_ rows: [[String: Any]]) -> [String: Any] { ["datasets": [["id": "claude_aside_local", "efficiency": ["status": "observed", "recentSessions": rows]]]] }
@@ -143,8 +158,8 @@ check(Design.todo(snapshot: snap([]), names: [:], helpers: [], now: nowS) == nil
 check(Design.todo(snapshot: snap([["session": "s1", "lastAt": iso(nowS), "lastContext": 399999]]), names: [:], helpers: [], now: nowS) == nil, "todo: hidden under 40만 tokens")
 check(Design.todo(snapshot: snap([["session": "s1", "lastAt": iso(nowS.addingTimeInterval(-6 * 3600)), "lastContext": 900000]]), names: [:], helpers: [], now: nowS) == nil, "todo: hidden after 6 hours")
 check(Design.todo(snapshot: snap([long]), names: [:], helpers: ["s1"], now: nowS) == nil, "todo: helper conversations skipped")
-check(Design.todo(snapshot: snap([long]), names: ["s1": "[유령마작] 점검·스토리·최적화"], helpers: [], now: nowS)
-      == Design.Todo(name: "\"[유령마작] 점검·스토리·최적화\"", tokens: "85.2만 토큰"), "todo: conversation title and context, dashboard number format")
+check(Design.todo(snapshot: snap([long]), names: ["s1": "[유령마작] 점검, 스토리, 최적화"], helpers: [], now: nowS)
+      == Design.Todo(name: "\"[유령마작] 점검, 스토리, 최적화\"", tokens: "85.2만 토큰"), "todo: conversation title and context, dashboard number format")
 check(Design.todo(snapshot: snap([long, ["session": "s2", "project": "p2", "lastAt": iso(nowS), "lastContext": 1200000]]), names: ["p2": "맞고"], helpers: [], now: nowS)?.name == "맞고 대화", "todo: the largest one first, project name when untitled")
 check(Design.compact(1_199_522_966) == "12억" && Design.compact(950000) == "95만" && Design.compact(1234) == "1,234", "compact numbers like the dashboard")
 check(Design.logoFile("codex", dark: false) == "codex-dark" && Design.logoFile("grok", dark: false) == "grok-dark" && Design.logoFile("claude", dark: false) == "claude" && Design.logoFile("codex", dark: true) == "codex", "light screens use the dark-ink logos")
@@ -157,7 +172,7 @@ do {
     let es = MenuBarStrip.entries(main: [cx, cl, named(Quota.fail("서버 오류 500", transient: true), "Grok")], ag: [named(Quota.noLoginFound(), "Gemini")])
     check(es.map { $0.logo } == ["codex", "claude"], "menu bar C: unknown services hidden")
     check(es.map { MenuBarStrip.numberText($0, now: nowM, tz: tzS) } == ["37", "월"], "menu bar C: numbers without a % sign, used-up shows the refill weekday")
-    check(MenuBarStrip.tooltip(es, now: nowM, tz: tzS) == "Codex 주간 37% 남음\nClaude 주간 다 씀 · 월 11:55에 다시 차요", "menu bar C: tooltip, one line per item")
+    check(MenuBarStrip.tooltip(es, now: nowM, tz: tzS) == "Codex 주간 37% 남음\nClaude 주간 다 씀, 월 11:55에 다시 차요", "menu bar C: tooltip, one line per item")
     let c5 = Usage.ok(80); c5.windows = [UsageWindow(key: "seven_day", used: 20, reset: nil), UsageWindow(key: "five_hour", used: 90, reset: nil), UsageWindow(key: "seven_day_opus", used: 99, reset: nil)]
     let b5 = MenuBarStrip.binding(c5)
     check(b5.window == "5시간" && abs(b5.remaining - 10) < 0.001, "menu bar C: the binding window (5-hour) is shown, model-only pools ignored")
@@ -174,18 +189,18 @@ do {
         "gemini-argon-wtu-weekly": ["window": "weekly", "remaining_fraction": 0.16887587308883667, "reset_time": "2026-11-04T03:42:44Z"]]
     let agQ = Antigravity.split(agB)
     check(agQ.count == 2 && agQ[0].ok && abs(agQ[0].remaining - 16.8876) < 0.001 && agQ[0].name == "Gemini 4 Argon", "argon split: the Argon bucket is its own item")
-    check(agQ[1].ok && agQ[1].remaining == 100 && agQ[1].windows.count == 4 && agQ[1].resetsAt == ISO8601DateFormatter().date(from: "2026-11-06T11:58:12Z"), "argon split: the rest is Gemini general + Claude·GPT (weekly and 5-hour)")
+    check(agQ[1].ok && agQ[1].remaining == 100 && agQ[1].windows.count == 4 && agQ[1].resetsAt == ISO8601DateFormatter().date(from: "2026-11-06T11:58:12Z"), "argon split: the rest is Gemini general + Claude, GPT (weekly and 5-hour)")
     check(Antigravity.isArgon("gemini-argon-wtu-weekly") && Antigravity.isArgon("gemini-pro-weekly") && !Antigravity.isArgon("gemini-weekly") && !Antigravity.isArgon("gemini-5h") && !Antigravity.isArgon("3p-weekly"), "argon split: which buckets are Argon (same rule as Windows plus the argon name)")
     var agB2 = agB; agB2["3p-5h"] = ["window": "5h", "remaining_fraction": 0, "reset_time": "2026-10-30T16:58:12Z"]
     let rest0 = Antigravity.split(agB2)[1], rb = MenuBarStrip.binding(rest0)
-    check(rest0.remaining == 100 && rb.window == "5시간" && rb.remaining == 0, "argon split: the binding bucket of the rest (Claude·GPT 5-hour used up) is shown")
+    check(rest0.remaining == 100 && rb.window == "5시간" && rb.remaining == 0, "argon split: the binding bucket of the rest (Claude, GPT 5-hour used up) is shown")
     var agB3 = agB; agB3.removeValue(forKey: "gemini-argon-wtu-weekly")
     check(!Antigravity.split(agB3)[0].ok && Antigravity.split(agB3)[1].ok, "argon split: no Argon bucket, only the Antigravity item")
     let grUsed = named(Usage.ok(0), "Grok"); grUsed.resetsAt = nowM.addingTimeInterval(3 * 3600); grUsed.lastOk = Date()
     let order = MenuBarStrip.entries(main: [cx, cl, grUsed], ag: agQ)
     check(order.map { $0.logo } == ["codex", "claude", "grok", "gemini", "antigravity"], "order: fixed Codex, Claude, Grok, Gemini 4 Argon, Antigravity")
     check(order.map { MenuBarStrip.numberText($0, now: nowM, tz: tzS) } == ["37", "월", "23시", "17", "100"], "order: used-up shows refill day or hour, usable shows the number")
-    check(MenuBarStrip.tooltip(order, now: nowM, tz: tzS) == "Codex 주간 37% 남음\nClaude 주간 다 씀 · 월 11:55에 다시 차요\nGrok 주간 다 씀 · 오늘 23:19에 다시 차요\nGemini 4 Argon 주간 17% 남음\nAntigravity(Gemini·Claude·GPT) 주간 100% 남음", "tooltip: all items in the new order, full text")
+    check(MenuBarStrip.tooltip(order, now: nowM, tz: tzS) == "Codex 주간 37% 남음\nClaude 주간 다 씀, 월 11:55에 다시 차요\nGrok 주간 다 씀, 오늘 23:19에 다시 차요\nGemini 4 Argon 주간 17% 남음\nAntigravity(Gemini, Claude, GPT) 주간 100% 남음", "tooltip: all items in the new order, full text")
     // refill label: local weekday, the hour within 24 hours
     check(MenuBarStrip.refillLabel(atS(11, 2, 12, 0), now: nowS, tz: tzS) == "월" && MenuBarStrip.refillLabel(atS(11, 4, 12, 43), now: nowS, tz: tzS) == "수", "refill label: Korean weekday")
     check(MenuBarStrip.refillLabel(atS(10, 31, 14, 0), now: nowS, tz: tzS) == "14시" && MenuBarStrip.refillLabel(atS(10, 30, 23, 59), now: nowS, tz: tzS) == "23시", "refill label: the hour when less than 24 hours away")
