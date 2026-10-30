@@ -37,9 +37,55 @@ function conv({session,model='claude-opus-5-5',n=300,start=30000,step=2000,cold=
  // measured lifetime: re-reads survive 40-minute gaps, 70-minute gaps lose the cache
  const g=[];let at=T0;const push=(gap,hit,i)=>{at+=gap*M;g.push({session:'g',model:'claude-opus-5-5',at,input:0,output:100,cacheRead:hit?100000:5000,cacheCreate:hit?1000:96000});};
  push(0,false);for(let i=0;i<10;i++){push(40,true);push(70,false);push(1,true);}
- assert.equal(h.analyze('claude_aside_local',g).lifetime,45,'the last 5-minute window where re-reads still won (40-45), not a guess beyond it');
+ const ga=h.analyze('claude_aside_local',g);assert.equal(ga.lifetime,60,'first gap bucket under 50% hits (60-90)');assert.equal(ga.lifeConfirmed,false,'10 samples per bucket: 추정, not 기록으로 확인함');
  const rec=[{session:'r',model:'claude-opus-5-5',at:T0,input:0,output:1,cacheRead:0,cacheCreate:50000,cw5m:0,cw1h:50000}];assert.equal(h.analyze('claude_cli_local',rec).lifetime,60,'1-hour writes recorded');
  ok('detection: cold restart, model switch, compaction, cache lifetime (recorded or measured)');}
+
+// 2b. gap buckets: hit rate per idle-gap bucket, lifetime = first bucket under 50%, 기록으로 확인함 only with 20+ samples
+{const mk=(spec)=>{const g=[];let at=T0;g.push({session:'b',model:'claude-opus-5-5',at,input:0,output:100,cacheRead:0,cacheCreate:100000});
+   for(const [gap,hit] of spec){at+=gap*M;g.push({session:'b',model:'claude-opus-5-5',at,input:0,output:100,cacheRead:hit?100000:5000,cacheCreate:hit?1000:96000});at+=M;g.push({session:'b',model:'claude-opus-5-5',at,input:0,output:100,cacheRead:100000,cacheCreate:1000});}return g;};
+ const rep=(n,x)=>Array.from({length:n},()=>x);
+ const t=h.gapTable([1,7,7,12,95],[8,61,95,95]);assert.deepEqual(t.map(b=>[b.from,b.n,b.hitPct]),[[0,1,100],[5,3,67],[10,1,100],[20,0,null],[30,0,null],[45,0,null],[60,1,0],[90,3,33]],'buckets 0-5, 5-10, 10-20, 20-30, 30-45, 45-60, 60-90, 90+');
+ const a=h.analyze('codex_aside_local',mk([...rep(25,[7,true]),...rep(25,[15,false])]).map(r=>({...r,model:'gpt-6-astra',input:r.cacheCreate,cacheCreate:0})));
+ assert.equal(a.lifetime,10);assert.equal(a.lifeConfirmed,true,'25 samples on both sides of the drop: 기록으로 확인함');
+ const b=h.analyze('codex_aside_local',mk([...rep(25,[7,true]),...rep(6,[15,false])]).map(r=>({...r,model:'gpt-6-astra',input:r.cacheCreate,cacheCreate:0})));
+ assert.equal(b.lifetime,10);assert.equal(b.lifeConfirmed,false,'6 samples past the drop: 추정');
+ assert.equal(b.cold.n,6,'cold restarts are misses at or past the lifetime');
+ const c=h.analyze('codex_aside_local',mk([...rep(25,[7,true]),...rep(4,[7,false]),...rep(25,[15,false])]).map(r=>({...r,model:'gpt-6-astra',input:r.cacheCreate,cacheCreate:0})));
+ assert.equal(c.cold.n,25);assert.equal(c.coldInside.n,4,'misses inside the lifetime are counted apart, not as advice');
+ // Claude with no recorded lifetime but hits after 10 to 30 minutes: a 1-hour cache, writes 2x
+ const d=h.analyze('claude_aside_local',mk([...rep(25,[15,true]),...rep(25,[70,false])]));assert.equal(d.ttlAssumed,'1h');assert.equal(d.writeRatio,2);assert.equal(d.lifetime,60);
+ const e=h.analyze('claude_aside_local',mk(rep(25,[70,false])));assert.equal(e.ttlAssumed,null,'no evidence past 10 minutes: 1.25');
+ // same-session, same-model only: a model change is a switch, never a cache-lifetime sample
+ const s=mk(rep(25,[7,true]));s[2].model='claude-sonnet-5-5';const sa=h.analyze('claude_aside_local',s);assert.equal(sa.gapTable.find(x=>x.from===5).n,24);
+ ok('gap buckets: hit rate per bucket, lifetime at the first bucket under 50%, 20+ samples for 기록으로 확인함, misses split at the lifetime');}
+
+// 2c. OpenAI weighting: a miss is new input at 1x (no cache-write charge), cached input 0.1x; Grok the same with 0.25x
+{const p=h.priceFor('codex_aside_local','gpt-6.1-terra');assert.equal(p.write,1);assert.equal(p.read,0.1);assert.equal(p.known,false,'output price unknown, input rule known');
+ assert.equal(h.priceFor('codex_cli_local','o4-mini').write,1);assert.equal(h.priceFor('grok_aside_local','grok-5').read,0.25);assert.equal(h.priceFor('grok_aside_local','grok-5').write,1);
+ const miss=[{session:'o',model:'gpt-5.6-sol',at:T0,input:0,output:0,cacheRead:100000,cacheCreate:0},{session:'o',model:'gpt-5.6-sol',at:T0+30*M,input:101000,output:0,cacheRead:0,cacheCreate:0}];
+ const a=h.analyze('codex_aside_local',miss);assert.equal(a.total,100000*0.1+101000,'miss = 1x input, no write surcharge');assert.equal(a.writeRatio,1);
+ const cw=h.analyze('codex_aside_local',[{session:'o',model:'gpt-5.6-sol',at:T0,input:10,output:0,cacheRead:0,cacheCreate:1000}]);assert.equal(cw.total,10+1000,'reported cache writes also 1x');
+ ok('OpenAI and Grok weighting: miss 1x input, cached 0.1x (Grok 0.25x), no cache-write surcharge');}
+
+// 2d. compaction: the summary call is counted; advice only when the saving is 10%+ and survives the unknowns
+{const big2=Array.from({length:2},(_,i)=>conv({session:'Q'+i,n:900,step:2500,limit:850000,post:75000,t0:T0+i*864e5}));
+ const a=h.analyze('claude_aside_local',big2.flat());
+ const T=a.compact.pre,r0=h.replay(a,T,{summaryOut:0}),r1=h.replay(a,T),rf=h.replay(a,T,{summaryIn:'full'}),rr=h.replay(a,T,{reread:h.REREAD_TEST});
+ assert.equal(Math.round(r1.total-r0.total),Math.round(r1.n*h.SUMMARY_OUT*a.outRatio),'summary output counted at the output ratio');
+ assert.ok(rf.total>r1.total,'a summary call that reads at 1x costs more');assert.ok(rr.total>r1.total,'re-reading after each summary costs more');
+ const solid={per:[{saveShare:20,saveFullShare:18,saveRereadShare:19}]},thin={per:[{saveShare:12,saveFullShare:5,saveRereadShare:-17}]},small={per:[{saveShare:8,saveFullShare:8,saveRereadShare:8}]};
+ assert.equal(h.compactionSolid(solid),true);assert.equal(h.compactionSolid(thin),false,'depends on the unknowns');assert.equal(h.compactionSolid(small),false,'under 10%');
+ // one Aside setting covers both sources: one fragile source keeps it out of the advice, and it becomes 실험해 볼 거리
+ const inp={sources:{claude_aside_local:{name:'Aside Claude',...a,cold:{n:0,burden:0},switch:{n:0,burden:0},compactCurve:{current:85,unit:'%',results:[{label:50,lower:true,n:9,save:2e6,saveShare:20,saveFullShare:18,saveRereadShare:20}]}},
+   codex_aside_local:{name:'Aside Codex',...a,cold:{n:0,burden:0},switch:{n:0,burden:0},outUnknown:[],compactCurve:{current:85,unit:'%',results:[{label:50,lower:true,n:9,save:1e6,saveShare:10,saveFullShare:4.4,saveRereadShare:-17.4}]}}},excluded:[],settings:{}};
+ const F2=h.rules(inp);assert.ok(!F2.some(f=>f.id.startsWith('compact')),'fragile saving: no settings advice');
+ const notes=h.reference(inp,F2).notes.join(' ');assert.ok(/실험해 볼 거리: Aside 자동 압축 기준이 50%였다면/.test(notes)&&/Aside Codex 17% 더/.test(notes)&&/기록에 없어요/.test(notes),'shown only as 실험해 볼 거리 with the caveat');
+ assert.ok(!/(낮춰요|올려요|설정에서)/.test(notes),'never phrased as a settings instruction');
+ inp.sources.codex_aside_local.compactCurve.results[0]={...inp.sources.codex_aside_local.compactCurve.results[0],saveShare:15,saveFullShare:14,saveRereadShare:12};
+ const F3=h.rules(inp),c3=F3.find(f=>f.id==='compact-Aside');assert.ok(c3&&c3.evidence==='추정'&&/요약을 만드는 비용/.test(c3.fixed.why),'solid saving: advice, tagged 추정');
+ ok('compaction: summary call counted, gated at 10% and on the unknowns, otherwise 실험해 볼 거리 only');}
+
 
 // 3. rules: only mechanical cache loss, ranked by 부담, with share of the source total
 const settings={aside:{enabled:true,thresholdPercent:85}};
@@ -50,19 +96,22 @@ const subagents=Array.from({length:40},(_,i)=>conv({session:'h'+i,n:20,model:'cl
 const input=inputOf({claude_aside_local:[...heavyCold.flat(),...big.flat(),...subagents.flat()],codex_aside_local:conv({session:'x',n:200,model:'gpt-5.6-sol',openai:true})});
 const F=h.rules(input);
 {const ids=F.map(f=>f.id);
- assert.ok(ids.includes('cold-claude_aside_local'),'cold restarts flagged');assert.ok(ids.includes('compact-Aside'),'compaction direction from the replay');
+ assert.ok(ids.includes('cold-claude_aside_local'),'cold restarts flagged');assert.ok(F.every(f=>f.evidence==='기록으로 확인함'||f.evidence==='추정'),'every item has an evidence tag');
  assert.ok(!ids.some(i=>/helper|shortopus|reread|live|long|claudemd/.test(i)),'no old re-read, helper, long-conversation or CLAUDE.md items');
  for(const f of F){const t=f.fixed.title+f.fixed.why+f.fixed.how;assert.ok(!/(Sonnet|Haiku|Opus)/.test(t),'no model advice: '+f.id);assert.ok(!/다시 읽기 줄|나누/.test(t),'no re-read cutting: '+f.id);
    assert.ok(f.shares.some(s=>t.includes(s+'%')),'share of total shown: '+f.id);assert.ok(/한도를/.test(t)&&!/부담|비중|가중/.test(t),'한도를 쓴 양 shown, old words gone: '+f.id);}
  for(let i=1;i<F.length;i++)assert.ok(F[i-1].impact>=F[i].impact,'ranked by 부담');
- const c=F.find(f=>f.id==='compact-Aside');assert.ok(c.facts.pick>=50,'replay candidates stop at half the window');assert.equal(c.facts.direction,c.facts.pick<85?'lower':'higher');
- const cold=F.find(f=>f.id==='cold-claude_aside_local');assert.ok(/캐시가 살아 있을 때/.test(cold.fixed.title)&&/새 대화/.test(cold.fixed.how));
+ const c=F.find(f=>f.id==='compact-Aside');if(c){assert.ok(c.facts.pick>=50,'replay candidates stop at half the window');assert.equal(c.facts.direction,c.facts.pick<85?'lower':'higher');assert.equal(c.evidence,'추정');}
+ const cold=F.find(f=>f.id==='cold-claude_aside_local');assert.ok(/\d+분 안에 이어 쓰면 한도를 최대 \d+% 아껴요/.test(cold.fixed.title)&&/최대치/.test(cold.fixed.why)&&/새 대화/.test(cold.fixed.how),'upper bound wording');
  ok('rules: cold restart and compaction items, ranked by 부담, share shown, no model or re-read advice');}
 {// a high re-read multiple alone is not waste: one long healthy conversation, cache always alive
  const healthy=inputOf({claude_aside_local:conv({session:'ok',n:300,step:1500})});assert.deepEqual(h.rules(healthy),[],'well-used cache: no items');
- const info=h.infoLines(healthy,[]);assert.ok(/캐시 적중 \d+%/.test(info[0].title)&&/적중률이 높을수록 좋아요/.test(info[0].why),'hit rate shown positively');
- assert.ok(/모델별로 한도를 쓴 양 \(/.test(info[0].why)&&!/부담|비중/.test(info[0].title+info[0].why),'model mix is a neutral line in plain words');assert.ok(info.some(i=>/지원 안 함/.test(i.title)),'unsupported sources named');
- assert.ok(/1\.25배\(5분 기준\)/.test(info[0].why),'unknown lifetime: 1.25 and said so');
+ const ref=h.reference(healthy,[]);assert.deepEqual(Object.keys(ref.table[0]),['source','used','hit','models']);assert.ok(/^\d+%$/.test(ref.table[0].hit),'hit rate in its own column');
+ assert.ok(/Opus 5\.5 100%/.test(ref.table[0].models)&&!/부담|비중/.test(JSON.stringify(ref)),'model mix is a neutral cell in plain words');assert.ok(ref.notes.some(i=>/Antigravity는 캐시 기록이 없어/.test(i)),'unsupported sources named once');
+ assert.ok(ref.notes.some(i=>/5분 기준 1\.25배/.test(i)),'unknown lifetime: 1.25 and said so');
+ {const two=inputOf({claude_aside_local:conv({session:'a',n:50}),codex_aside_local:conv({session:'b',n:50,model:'gpt-6-astra',openai:true}),codex_cli_local:conv({session:'c',n:50,model:'gpt-6-astra',openai:true})});two.sources.codex_cli_local.name='Codex 앱';
+  const r2=h.reference(two,[]);assert.equal(r2.table.length,3,'one row per source');assert.equal(r2.notes.filter(x=>/공개 요금이 없어/.test(x)).length,1,'unknown-price models noted once');
+  const all=r2.notes.join(' ');for(const sent of all.split(/[.]/).map(x=>x.trim()).filter(Boolean))assert.equal(all.split(sent).length-1,1,'no repeated sentence: '+sent);}
  // small cold-restart cost is not flagged
  const few=inputOf({claude_aside_local:[...conv({session:'big',n:2000,step:300}),...conv({session:'one',n:60,cold:[30]})]});assert.ok(!h.rules(few).some(f=>f.id.startsWith('cold')),'below 3% of the total: no item');
  // model switches below the floor are ignored, above it flagged with the right advice
@@ -89,7 +138,9 @@ const F=h.rules(input);
   [{...good,how:good.how+' 한도 부담 비중이 커요.'},1],                          // old wording
   [{...good,how:good.how.replace('. ',', 그리고 ')+' 캐시 · 토큰'},1],                // middle dot                                            // money
   [{...good,why:'readRatio 0.1이에요. '+good.why},1],                               // field name
-  [{...good,why:'캐시가 만료돼 다시 저장했어요.'},1],                                 // share of total missing
+  [{...good,title:'Aside Claude는 최대한 이어 써요',why:'캐시가 만료돼 다시 저장했어요.'},1],                                 // share of total missing
+  [{...good,title:good.title.replace('최대 ',''),why:good.why.replace(/[^.]*최대치예요\. ?/,'')},1],      // drops the upper bound
+  [{...good,title:good.title.replace(/^Aside Claude는 /,'')},1],                                     // title without the source                                 // share of total missing
   [{...good,id:'reread-x'},1],
   [{...good,why:'요금 기준 추정으로 보면 '+good.why},1],                                   // estimate said once on the page
   [{...good,how:'60분 안에 이어 쓰면 좋아요. 쉬기 전에 메모해 두세요.'},1],                // drops the new-conversation step                                                      // not a finding
@@ -112,13 +163,14 @@ const F=h.rules(input);
   const home=path.join(dir,'home');fs.mkdirSync(path.join(home,'.aside','u','0'),{recursive:true});fs.writeFileSync(path.join(home,'.aside','u','0','settings.json'),JSON.stringify({compaction:{enabled:true,thresholdPercent:85}}));
   const snap={datasets:[],period:{to:'2026-10-29'}};
   const r=await h.habitCheck({snap,names:{},indexPath:idx,home,useModel:false,now});
-  assert.ok(r.items.length>=2&&r.items.every(i=>i.by==='rule'),'rule texts without a model');assert.ok(r.info.length>=2&&r.basis.includes('요금 기준 추정')&&!/부담|비중|가중|[\u00b7\u2022\u2219]/.test(r.basis+JSON.stringify(r.info)+JSON.stringify(r.items)));
+  assert.ok(r.items.length>=1&&r.items.every(i=>i.by==='rule'&&/^(기록으로 확인함|추정)$/.test(i.evidence)),'rule texts without a model, each tagged');assert.ok(r.table.length>=1&&r.basis.includes('요금 기준 추정')&&!/부담|비중|가중|[\u00b7\u2022\u2219]/.test(r.basis+JSON.stringify(r.table)+JSON.stringify(r.notes)+JSON.stringify(r.items)));
+  assert.ok(!/\n/.test(r.basis)&&r.basis.length<200,'shared explanation is one line');assert.ok(r.evidence&&r.evidence['Aside Claude']&&r.evidence['Aside Claude'].gaps.length===8,'gap table kept for checking');
   assert.ok(/공개 API 요금 비율 기준, 구독 한도 실제 차감 방식은 비공개라 추정/.test(fs.readFileSync(path.join(__dirname,'habit-check.cjs'),'utf8')),'source note kept in code');
-  assert.ok(r.info.some(i=>/Antigravity: 한도를 쓴 양은 지원 안 함/.test(i.title)),'Antigravity excluded with 지원 안 함');
+  assert.ok(r.notes.some(i=>/Antigravity는 캐시 기록이 없어/.test(i)),'Antigravity excluded, said once');
   // a model that tries the old framing is overruled; a good rewording is kept
-  const ask=async F=>({model:'Claude Haiku',items:[{id:F[0].id,title:'다시 읽기 줄이기',why:'87배예요.',how:'대화를 나눠요.'},{id:F[1].id,title:F[1].fixed.title+'!',why:F[1].fixed.why,how:F[1].fixed.how}]});
+  const ask=async F=>({model:'Claude Haiku',items:[{id:F[0].id,title:'다시 읽기 줄이기',why:'87배예요.',how:'대화를 나눠요.'},...F.slice(1).map(f=>({id:f.id,title:f.fixed.title+'!',why:f.fixed.why,how:f.fixed.how}))]});
   const r2=await h.habitCheck({snap,names:{},indexPath:idx,home,now,ask});
-  assert.equal(r2.dropped.length,1);assert.equal(r2.model,'Claude Haiku');assert.ok(r2.items.some(i=>i.by==='model')&&r2.items.some(i=>i.by==='rule'));
+  assert.equal(r2.dropped.length,1);assert.ok(r2.items.some(i=>i.by==='rule'));if(r.items.length>1)assert.ok(r2.model==='Claude Haiku'&&r2.items.some(i=>i.by==='model'));assert.ok(r2.items.every(i=>i.evidence),'model text keeps the code evidence tag');
   assert.ok(!r2.items.some(i=>/다시 읽기 줄이기|나눠/.test(i.title+i.how)),'old framing never reaches the page');
   assert.deepEqual(r2.items.map(i=>i.id),r.items.map(i=>i.id),'order stays by 부담');
   const r3=await h.habitCheck({snap:{datasets:[]},names:{},useModel:false,home:os.tmpdir()});assert.equal(r3.items.length,0,'no data, no items');
