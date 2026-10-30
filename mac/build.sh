@@ -16,6 +16,15 @@ cp Info.plist "$OUT/Contents/Info.plist"
 mkdir -p "$OUT/Contents/Resources/logos"
 for f in codex codex-dark claude grok grok-dark gemini; do cp "../assets/$f.png" "$OUT/Contents/Resources/logos/"; done
 plutil -lint "$OUT/Contents/Info.plist" >/dev/null
-# local ad-hoc signature (binds Info.plist to the binary; not a Developer ID signature, not notarized)
-codesign --force --sign - "$OUT"
+# local signature (binds Info.plist to the binary; not a Developer ID signature, not notarized).
+# A stable self-signed identity in the login keychain keeps the designated requirement the same across
+# rebuilds, so macOS does not ask again for keychain access ("Claude Code-credentials") after each build.
+# Without that identity it falls back to an ad-hoc signature (which changes on every build).
+SIGN_ID="${SIGN_ID:-UsageGauge Local Signing}"
+if security find-identity -p codesigning 2>/dev/null | grep -qF "\"$SIGN_ID\""; then
+  codesign --force --sign "$SIGN_ID" "$OUT"
+else
+  echo "warning: code-signing identity \"$SIGN_ID\" not found; using an ad-hoc signature (keychain access will be asked again)" >&2
+  codesign --force --sign - "$OUT"
+fi
 echo "Built $(pwd)/$OUT"

@@ -206,20 +206,268 @@ do {
     check(MenuBarStrip.refillLabel(atS(10, 31, 14, 0), now: nowS, tz: tzS) == "14시" && MenuBarStrip.refillLabel(atS(10, 30, 23, 59), now: nowS, tz: tzS) == "23시", "refill label: the hour when less than 24 hours away")
     check(MenuBarStrip.refillLabel(atS(10, 31, 17, 15), now: nowS, tz: tzS) == "토" && MenuBarStrip.refillLabel(nil, now: nowS, tz: tzS) == "0" && MenuBarStrip.refillLabel(atS(10, 30, 17, 0), now: nowS, tz: tzS) == "곧", "refill label: 24 hours or more is a weekday; no reset 0; passed 곧")
     check(MenuBarStrip.refillLabel(atS(11, 2, 12, 0), now: nowS, tz: TimeZone(identifier: "America/Los_Angeles")!) == "일", "refill label: weekday in the local time zone")
-    // glyphs: every key has a vector path that parses and fills the 16 pt box
+    // glyphs (variant A): every key has a 1x and a 2x mask of the expected size, with real ink and no outline added
     for k in MenuBarStrip.order {
-        let p = MenuBarStrip.glyphPath(k)
-        check(p != nil && p!.elementCount > 10 && !p!.bounds.isEmpty, "glyph: \(k) vector path parses")
+        let g = MenuBarGlyphs.named(k), gi = MenuBarGlyphs.image(k)
+        let reps = (gi?.representations ?? []).compactMap { $0 as? NSBitmapImageRep }
+        let ok = g != nil && reps.count == 2 && reps[0].pixelsWide == g!.cellW && reps[0].pixelsHigh == g!.cellH
+            && reps[1].pixelsWide == 2 * g!.cellW && reps[1].pixelsHigh == 2 * g!.cellH && gi!.isTemplate
+        check(ok, "glyph: \(k) has 1x and 2x masks")
+        if ok {
+            var ink = 0.0, solid = 0
+            for y in 0..<g!.cellH { for x in 0..<g!.cellW { let a = Double(reps[0].colorAt(x: x, y: y)?.alphaComponent ?? 0); ink += a; if a > 0.9 { solid += 1 } } }
+            check(ink > 15 && solid > 5 && ink < Double(g!.cellW * g!.cellH) * 0.7, "glyph: \(k) 1x mask has ink at natural weight")
+        }
     }
-    do {
-        let sp = MenuBarStrip.svgPath("M10 20L30-40h5v-5C1 2 3 4 5 6Z")
-        var pts = [NSPoint](repeating: .zero, count: 3)
-        var got: [NSPoint] = []
-        for i in 0..<5 { _ = sp.element(at: i, associatedPoints: &pts); got.append(i == 4 ? pts[2] : pts[0]) }
-        check(got == [NSPoint(x: 10, y: 20), NSPoint(x: 30, y: -40), NSPoint(x: 35, y: -40), NSPoint(x: 35, y: -45), NSPoint(x: 5, y: 6)]
-              && sp.element(at: 5) == .closePath, "glyph: path parser handles signs and relative commands")
-    }
+    check([MenuBarGlyphs.codex, MenuBarGlyphs.claude, MenuBarGlyphs.grok].allSatisfy { $0.cellH == 16 } && [MenuBarGlyphs.gemini, MenuBarGlyphs.antigravity].allSatisfy { $0.cellH == 15 },
+          "glyph: logos 15 px tall (Gemini star and Antigravity 14 px) plus the 1 px placement margin")
+    check(MenuBarStrip.fillHeight(0) == 0 && MenuBarStrip.fillHeight(100) == 12 && MenuBarStrip.fillHeight(37) == 4
+          && MenuBarStrip.fillHeight(1) == 2 && MenuBarStrip.fillHeight(17) == 2, "bar: 12 pt filled from the bottom, at least 2 pt")
+    check(MenuBarStrip.textFont("37") === MenuBarStrip.font && MenuBarStrip.textFont("0") === MenuBarStrip.font
+          && MenuBarStrip.textFont("월").pointSize == 14 && MenuBarStrip.textFont("14시").pointSize == 14 && MenuBarStrip.font.pointSize == 13,
+          "menu bar text: numbers 13 pt, refill day/hour 14 pt")
     let img = MenuBarStrip.image(order, now: nowM)
     check(img.isTemplate && img.size.height == 22 && img.size.width > 5 * 16, "menu bar image: one template image for all items")
+    // render at 1x and check the pixels of the first item: the logo mask lands 1:1, the bar is a 2 px track + fill
+    do {
+        let w = Int(img.size.width), h = 22
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4,
+                                   hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        rep.size = img.size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        img.draw(in: NSRect(origin: .zero, size: img.size))
+        NSGraphicsContext.restoreGraphicsState()
+        func a(_ x: Int, _ y: Int) -> Double { Double(rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) }  // y from the top
+        let m = MenuBarGlyphs.image("codex")!.representations[0] as! NSBitmapImageRep
+        var maxDiff = 0.0
+        for y in 0..<16 { for x in 0..<16 { maxDiff = max(maxDiff, abs(a(x, 4 + y) - Double(m.colorAt(x: x, y: y)?.alphaComponent ?? 0))) } }
+        check(maxDiff < 0.02, "menu bar image: the Codex logo is drawn 1:1 on whole pixels at 1x (max diff \(maxDiff))")
+        let bx = 15 + 3   // Codex advance + gap; 37 left = 4 px filled at the bottom of rows 6...17
+        check(abs(a(bx, 8) - 0.3) < 0.05 && a(bx, 6) > 0.1 && abs(a(bx + 1, 10) - 0.3) < 0.05 && a(bx, 15) > 0.95 && a(bx + 1, 16) > 0.95
+              && a(bx - 1, 12) < 0.02 && a(bx + 2, 12) < 0.02 && a(bx, 5) < 0.02 && a(bx, 18) < 0.02,
+              "menu bar image: 2x12 bar, faint 30% track, filled from the bottom, no outline")
+        let cbx = 15 + 3 + 2 + 3 + Int(ceil(("37" as NSString).size(withAttributes: [.font: MenuBarStrip.font]).width)) + 10 + 16 + 3
+        check(a(cbx, 11) > 0.2 && a(cbx, 11) < 0.4 && a(cbx, 16) < 0.4, "menu bar image: a used-up service shows only the faint track")
+    }
+}
+
+// ---- refresh scheduling (Refresh.swift): debounce, minimum gaps, idle polling, backoff ----
+do {
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+    func at(_ s: Double) -> Date { t0.addingTimeInterval(s) }
+    var s = ProviderState()
+    check(Sched.decide(s, now: t0, idle: 180) == .start, "sched: never looked up -> start now")
+    Sched.started(&s, now: t0)
+    check(Sched.decide(s, now: at(1), idle: 180) == .busy, "sched: one lookup at a time per service")
+    Sched.finished(&s, now: at(2), transient: false, rateLimited: false, retryAfter: nil)
+    check(Sched.decide(s, now: at(100), idle: 180) == .wait(at(180)), "sched: idle poll waits 3 min after the last start")
+    check(Sched.decide(s, now: at(180), idle: 180) == .start, "sched: idle poll due at 3 min")
+    Sched.request(&s, gap: 60, reason: "활동")
+    check(Sched.decide(s, now: at(30), idle: 180) == .wait(at(60)), "sched: activity respects the minimum gap (Claude 60 s)")
+    check(Sched.decide(s, now: at(61), idle: 180) == .start, "sched: activity starts once the gap has passed")
+    Sched.request(&s, gap: 120, reason: "broad")
+    check(s.requestGap == 60 && s.reason == "활동", "sched: a wider request doesn't loosen a pending tighter one")
+    Sched.started(&s, now: at(61))
+    check(s.requestGap == nil, "sched: a start serves the pending request")
+    Sched.request(&s, gap: 60, reason: "활동 중 새 활동")
+    Sched.finished(&s, now: at(63), transient: false, rateLimited: false, retryAfter: nil)
+    check(Sched.decide(s, now: at(70), idle: 180) == .wait(at(121)), "sched: activity during a lookup is served after the gap, not dropped")
+
+    // backoff
+    check(RefreshPolicy.backoff(failures: 1, rateLimited: false, retryAfter: nil) == 60
+          && RefreshPolicy.backoff(failures: 3, rateLimited: false, retryAfter: nil) == 240
+          && RefreshPolicy.backoff(failures: 12, rateLimited: false, retryAfter: nil) == 1800, "backoff: 1, 2, 4 ... min, capped at 30")
+    check(RefreshPolicy.backoff(failures: 1, rateLimited: true, retryAfter: nil) == 120, "backoff: a 429 waits at least 2 min")
+    check(RefreshPolicy.backoff(failures: 1, rateLimited: true, retryAfter: 900) == 900
+          && RefreshPolicy.backoff(failures: 1, rateLimited: true, retryAfter: 99999) == 3600, "backoff: Retry-After respected, capped at 1 h")
+    var b = ProviderState()
+    Sched.started(&b, now: t0)
+    Sched.finished(&b, now: at(1), transient: true, rateLimited: true, retryAfter: 300)
+    Sched.request(&b, gap: 45, reason: "활동")
+    check(Sched.decide(b, now: at(100), idle: 180) == .wait(at(301)), "backoff: activity can't hurry a 429 block")
+    Sched.clearNetworkBackoff(&b, now: at(100))
+    check(Sched.decide(b, now: at(100), idle: 180) == .wait(at(301)), "backoff: wake/network back keeps a 429 block")
+    check(Sched.decide(b, now: at(301), idle: 180) == .start, "backoff: one retry when the block ends")
+    var n = ProviderState()
+    Sched.started(&n, now: t0); Sched.finished(&n, now: at(1), transient: true, rateLimited: false, retryAfter: nil)
+    Sched.started(&n, now: at(61)); Sched.finished(&n, now: at(62), transient: true, rateLimited: false, retryAfter: nil)
+    check(n.failures == 2 && n.blockedUntil == at(182), "backoff: second network failure waits 2 min")
+    Sched.clearNetworkBackoff(&n, now: at(90))
+    check(Sched.decide(n, now: at(90), idle: 180) == .start, "backoff: network back retries a network failure at once")
+    Sched.started(&n, now: at(90)); Sched.finished(&n, now: at(91), transient: false, rateLimited: false, retryAfter: nil)
+    check(n.failures == 0 && n.blockedUntil == nil, "backoff: success clears it")
+    check(Usage.retryAfterSeconds("120") == 120 && Usage.retryAfterSeconds("x") == nil
+          && Usage.retryAfterSeconds("Wed, 21 Oct 2015 07:28:00 GMT", now: ISO8601DateFormatter().date(from: "2015-10-21T07:27:00Z")!) == 60,
+          "retry-after: seconds and HTTP date")
+    check(Usage.httpError(429).rateLimited && !Usage.httpError(503).rateLimited, "429 is marked rate limited")
+
+    // debounce
+    var d = Debouncer()
+    check(d.takeIfDue(now: t0) == nil, "debounce: nothing noted, nothing due")
+    d.note([.claude], broad: false, asideSession: true, label: "Aside claude-code", at: t0)
+    check(d.due() == at(10) && d.takeIfDue(now: at(9)) == nil, "debounce: 10 s after the last activity")
+    d.note([.claude], broad: true, asideSession: true, label: "Aside", at: at(8))
+    check(d.due() == at(18), "debounce: new activity pushes it back")
+    for i in stride(from: 16.0, through: 40, by: 4) { d.note([.codex], broad: false, asideSession: false, label: "Codex", at: at(i)) }
+    check(d.due() == at(30), "debounce: but no later than 30 s after the first activity")
+    let got = d.takeIfDue(now: at(30))!
+    check(got.specific == [.claude, .codex] && got.broad.isEmpty, "debounce: services collected; state.db with a chat file is not broad")
+    check(got.label == "Aside claude-code, Aside, Codex" && d.first == nil, "debounce: labels kept, then reset")
+    var dl = Debouncer()
+    dl.note([.claude], broad: true, asideSession: true, label: "Aside claude-code, Aside", at: t0)
+    dl.note([.agy], broad: false, asideSession: false, label: "agy, Aside claude-code", at: t0)
+    check(dl.labels == ["Aside claude-code", "Aside", "agy"], "debounce: log labels are not repeated")
+    var e = Debouncer()
+    e.note([], broad: true, asideSession: false, label: "Aside", at: t0)
+    let g2 = e.takeIfDue(now: at(10))!
+    check(g2.specific.isEmpty && g2.broad == Provider.quick, "debounce: Aside state.db alone -> all quick services at the broad gap")
+    check(RefreshPolicy.minGap(.codex) == 45 && RefreshPolicy.minGap(.grok) == 45 && RefreshPolicy.minGap(.claude) == 90
+          && RefreshPolicy.minGap(.agy) == 600 && RefreshPolicy.idle(.codex) == 180 && RefreshPolicy.idle(.grok) == 180
+          && RefreshPolicy.idle(.claude) == 180 && RefreshPolicy.idle(.agy) == 1200, "policy: gaps and idle intervals (Claude 90 s, agy 10/20 min)")
+    check(!RefreshPolicy.followsGeneralTriggers.contains(.agy) && RefreshPolicy.followsGeneralTriggers.contains(.claude),
+          "policy: popover open, wake and network change don't start agy")
+
+    // Claude: adaptive minimum gap
+    var c = ProviderState()
+    Sched.started(&c, now: t0); Sched.finished(&c, now: at(1), transient: false, rateLimited: false, retryAfter: nil, adaptive: true)
+    check(c.floorGap == 90, "claude gap: starts at 90 s")
+    Sched.request(&c, gap: RefreshPolicy.forceMinGap, reason: "새로고침")
+    check(Sched.decide(c, now: at(30), idle: 180) == .wait(at(90)), "claude gap: even the refresh button waits 90 s")
+    Sched.started(&c, now: at(90)); Sched.finished(&c, now: at(91), transient: true, rateLimited: true, retryAfter: nil, adaptive: true)
+    check(c.floorGap == 180 && c.blockedUntil == at(271), "claude gap: a 429 doubles it to 3 min and blocks that long")
+    Sched.started(&c, now: at(271)); Sched.finished(&c, now: at(272), transient: true, rateLimited: true, retryAfter: nil, adaptive: true)
+    check(c.floorGap == 360, "claude gap: a second 429 doubles it again")
+    Sched.started(&c, now: at(632)); Sched.finished(&c, now: at(633), transient: true, rateLimited: true, retryAfter: nil, adaptive: true)
+    Sched.started(&c, now: at(1233)); Sched.finished(&c, now: at(1234), transient: true, rateLimited: true, retryAfter: nil, adaptive: true)
+    check(c.floorGap == 600 && c.blockedUntil == at(1834), "claude gap: capped at 10 min")
+    Sched.started(&c, now: at(1834)); Sched.finished(&c, now: at(1835), transient: true, rateLimited: true, retryAfter: 1500, adaptive: true)
+    check(c.floorGap == 600 && c.blockedUntil == at(3335), "claude gap: a longer Retry-After wins for the block")
+    check(Sched.decide(c, now: at(3000), idle: 180) == .wait(at(3335)), "claude gap: activity can't hurry the block")
+    var tt = 3335.0
+    for _ in 0..<2 { Sched.started(&c, now: at(tt)); Sched.finished(&c, now: at(tt + 1), transient: false, rateLimited: false, retryAfter: nil, adaptive: true); tt += 600 }
+    check(c.floorGap == 600 && c.okStreak == 2 && c.blockedUntil == nil, "claude gap: two successes keep it")
+    check(Sched.decide(c, now: at(tt - 300), idle: 180) == .wait(at(tt)), "claude gap: idle polling waits for the wider gap too")
+    Sched.started(&c, now: at(tt)); Sched.finished(&c, now: at(tt + 1), transient: false, rateLimited: false, retryAfter: nil, adaptive: true)
+    check(c.floorGap == 300 && c.okStreak == 0, "claude gap: the third success in a row halves it")
+    for _ in 0..<3 { tt += 300; Sched.started(&c, now: at(tt)); Sched.finished(&c, now: at(tt + 1), transient: false, rateLimited: false, retryAfter: nil, adaptive: true) }
+    check(c.floorGap == 150, "claude gap: three more halve it again")
+    for _ in 0..<2 { tt += 150; Sched.started(&c, now: at(tt)); Sched.finished(&c, now: at(tt + 1), transient: false, rateLimited: false, retryAfter: nil, adaptive: true) }
+    tt += 150; Sched.started(&c, now: at(tt)); Sched.finished(&c, now: at(tt + 1), transient: true, rateLimited: false, retryAfter: nil, adaptive: true)
+    check(c.okStreak == 0 && c.floorGap == 150 && !c.rateLimited, "claude gap: a network failure breaks the streak, keeps the gap")
+    for _ in 0..<3 { tt += 200; Sched.started(&c, now: at(tt)); Sched.finished(&c, now: at(tt + 1), transient: false, rateLimited: false, retryAfter: nil, adaptive: true) }
+    check(c.floorGap == 90, "claude gap: never below 90 s")
+    var nonAdaptive = ProviderState()
+    Sched.started(&nonAdaptive, now: t0); Sched.finished(&nonAdaptive, now: at(1), transient: true, rateLimited: true, retryAfter: nil)
+    check(nonAdaptive.floorGap == 0 && nonAdaptive.blockedUntil == at(121), "other services: 429 keeps the old 2 min backoff")
+
+    // agy: 10 min floor for every request, 20 min idle
+    var ag = ProviderState(); ag.floorGap = RefreshPolicy.minGap(.agy)
+    Sched.started(&ag, now: t0); Sched.finished(&ag, now: at(9), transient: false, rateLimited: false, retryAfter: nil)
+    Sched.request(&ag, gap: RefreshPolicy.forceMinGap, reason: "새로고침")
+    check(Sched.decide(ag, now: at(60), idle: RefreshPolicy.idle(.agy)) == .wait(at(600)), "agy: no run sooner than 10 min, even from the button")
+    ag.requestGap = nil
+    check(Sched.decide(ag, now: at(700), idle: RefreshPolicy.idle(.agy)) == .wait(at(1200)), "agy: idle run every 20 min")
+
+    // Claude debounce: once after the chat goes quiet
+    var cd2 = Debouncer.claude(), od = Debouncer.others()
+    for i in stride(from: 0.0, through: 60, by: 3) {
+        cd2.note([.claude], broad: true, asideSession: true, label: "Aside claude-code", at: at(i))
+        od.note([.claude], broad: true, asideSession: true, label: "Aside claude-code", at: at(i))
+    }
+    check(od.first == nil && od.takeIfDue(now: at(200)) == nil, "debounce: Claude activity doesn't touch the other lane")
+    check(cd2.takeIfDue(now: at(70)) == nil && cd2.due() == at(80), "debounce: Claude waits until the chat is quiet for 20 s")
+    let cGot = cd2.takeIfDue(now: at(80))!
+    check(cGot.specific == [.claude] && cGot.broad.isEmpty && cd2.first == nil && cd2.quiet == 20, "debounce: one Claude request per reply, settings kept")
+    var cd3 = Debouncer.claude()
+    for i in stride(from: 0.0, through: 400, by: 5) { cd3.note([.claude], broad: false, asideSession: true, label: "Aside claude-code", at: at(i)) }
+    check(cd3.due() == at(180), "debounce: a reply that keeps writing asks at most every 3 min")
+    var cd4 = Debouncer.claude()
+    cd4.note([.codex], broad: false, asideSession: true, label: "Aside openai-codex", at: t0)
+    check(cd4.first == nil, "debounce: other services' activity doesn't push Claude's quiet time")
+    cd4.note([], broad: true, asideSession: false, label: "Aside", at: t0)
+    check(cd4.takeIfDue(now: at(20))?.broad == [.claude], "debounce: Aside state.db alone asks Claude once too, at the broad gap")
+    var od2 = Debouncer.others()
+    od2.note([], broad: true, asideSession: false, label: "Aside", at: t0)
+    check(od2.takeIfDue(now: at(10))?.broad == [.codex, .grok], "debounce: ...and Codex, Grok in their lane (never agy)")
+
+    // Claude login kept in memory
+    var tc = TokenCache()
+    check(tc.usable(now: t0) == nil, "token cache: empty -> read the keychain")
+    tc.store(Usage.Login(access: "tok", expires: at(3600)), now: t0)
+    check(tc.usable(now: at(60))?.access == "tok", "token cache: a token valid for an hour is reused")
+    check(tc.usable(now: at(3000)) == nil, "token cache: read again 10 min before it expires")
+    tc.invalidate()
+    check(tc.usable(now: at(60)) == nil, "token cache: a 401 drops it")
+    tc.store(Usage.Login(error: "키체인 읽기가 허용되지 않았어요"), now: t0)
+    check(tc.usable(now: t0) == nil && tc.login == nil, "token cache: errors are never kept")
+    tc.store(Usage.Login(access: "tok2", expires: nil), now: t0)
+    check(tc.usable(now: at(3000))?.access == "tok2" && tc.usable(now: at(3700)) == nil, "token cache: no expiry -> read again after an hour")
+
+    // AI habit check: a link asks first, 10 min between runs
+    check(HabitGate.decide(fromURL: true, running: false, lastRun: nil, now: t0) == .confirm, "habit gate: a link asks first")
+    check(HabitGate.decide(fromURL: false, running: false, lastRun: nil, now: t0) == .run, "habit gate: the button runs at once")
+    check(HabitGate.decide(fromURL: false, running: false, lastRun: at(-60), now: t0) == .wait(9)
+          && HabitGate.decide(fromURL: true, running: false, lastRun: at(-599), now: t0) == .wait(1), "habit gate: 10 min between runs, from either")
+    check(HabitGate.decide(fromURL: true, running: false, lastRun: at(-600), now: t0) == .confirm, "habit gate: free again after 10 min")
+    check(HabitGate.decide(fromURL: true, running: true, lastRun: nil, now: t0) == .busy, "habit gate: one run at a time")
+    check(HabitGate.waitText(9) == "9분 뒤에 다시 돌릴 수 있어요" && HabitGate.confirmTitle == "AI 진단을 돌릴까요?"
+          && HabitGate.confirmText == "한도를 조금 써요.", "habit gate: wording")
+
+    // agy logs: only our run's file and week-old CLI logs
+    let wd = "/var/folders/x/T/UsageGauge-agy"
+    let heads = ["cli-20261031_000101.log": "I1031 server.go] Creating CLI server backend: workspaceDirs=[/private/var/folders/x/T/UsageGauge-agy]",
+                 "cli-20261031_000102.log": "I1031 manager.go] Initializing CLI store manager for workspace /Users/me/code/app",
+                 "cli-20261020_000000.log": "old", "notes.txt": "x", "cli.log": "x"]
+    let lf: [(name: String, created: Date, modified: Date)] = [
+        ("cli-20261031_000101.log", at(1), at(9)), ("cli-20261031_000102.log", at(2), at(9)),
+        ("cli-20261020_000000.log", at(-8 * 86400), at(-8 * 86400)), ("cli-20261024_000000.log", at(-6 * 86400), at(-6 * 86400)),
+        ("notes.txt", at(-9 * 86400), at(-9 * 86400)), ("cli.log", at(1), at(1))]
+    let pk = AgyLogs.pick(lf, workDir: wd, runStart: t0, now: at(10)) { heads[$0] ?? "" }
+    check(pk.run == ["cli-20261031_000101.log"], "agy logs: the file from our run (our workspace, inside the run) is removed")
+    check(pk.old == ["cli-20261020_000000.log"], "agy logs: CLI logs older than 7 days are pruned, nothing else")
+    check(AgyLogs.isCliLog("cli-20261030_234908.log") && !AgyLogs.isCliLog("cli.log") && !AgyLogs.isCliLog("cli-2026.log.bak"), "agy logs: name pattern")
+
+    // log rotation
+    let rdir = (NSTemporaryDirectory() as NSString).appendingPathComponent("ug-rot-\(getpid())")
+    try? FileManager.default.createDirectory(atPath: rdir, withIntermediateDirectories: true)
+    let rlog = rdir + "/menubar.log"
+    FileManager.default.createFile(atPath: rlog + ".1", contents: Data("older".utf8))
+    FileManager.default.createFile(atPath: rlog, contents: Data("current".utf8))
+    Log.rotate(rlog)
+    check(!FileManager.default.fileExists(atPath: rlog) && (try? String(contentsOfFile: rlog + ".1", encoding: .utf8)) == "current",
+          "log: rotates to menubar.log.1, keeping one old file")
+    try? FileManager.default.removeItem(atPath: rdir)
+
+    // activity classification
+    let r = ActivityRoots(home: "/h")
+    check(ActivityClassifier.classify("/h/.aside/u/0/state.db-wal", r) == .asideState
+          && ActivityClassifier.classify("/h/.aside/u/0/state.db", r) == .asideState, "activity: Aside state.db(-wal)")
+    check(ActivityClassifier.classify("/h/.aside/u/0/sessions/2026_x/messages.jsonl", r) == .asideSession("/h/.aside/u/0/sessions/2026_x/messages.jsonl"),
+          "activity: Aside chat log")
+    check(ActivityClassifier.classify("/h/.aside/u/0/sessions/2026_x/tmp/a.png", r) == nil
+          && ActivityClassifier.classify("/h/.aside/u/0/memory/x.md", r) == nil
+          && ActivityClassifier.classify("/h/.aside/u/0/state.db-shm", r) == nil, "activity: other Aside files ignored")
+    check(ActivityClassifier.classify("/h/.codex/sessions/2026/10/30/r.jsonl", r) == .codex
+          && ActivityClassifier.classify("/h/.claude/projects/-x/abc.jsonl", r) == .claude
+          && ActivityClassifier.classify("/h/.grok/sessions/s1", r) == .grok, "activity: CLI session folders")
+    check(ActivityClassifier.classify("/h/.gemini/antigravity-cli/conversations/c1.pb", r) == .agy
+          && ActivityClassifier.classify("/h/.gemini/antigravity-cli/cli.log", r) == nil
+          && ActivityClassifier.classify("/h/.gemini/antigravity-cli/log/cli-1.log", r) == nil, "activity: agy conversations count, its logs don't")
+    check(ActivityClassifier.classify("/h/.gemini/antigravity-cli/brain/b1/x.md", r) == .agy
+          && ActivityClassifier.classify("/h/.gemini/antigravity-cli/conversation_summaries.db-wal", r) == nil
+          && ActivityClassifier.classify("/h/.gemini/antigravity-cli/updater/update.lock", r) == nil, "activity: agy brain counts; summaries db and updater don't (every run writes them)")
+    check(r.excluded.contains("/h/.aside/u/0/memory") && r.excluded.count <= 8 && !r.excluded.contains("/h/.aside/u/0/sessions"),
+          "activity: Aside folders that never count are excluded from the watch (at most 8)")
+    check(ActivityClassifier.classify("/h/.codexx/sessions/a", r) == nil && ActivityClassifier.classify("/h/.claude/projectsX/a", r) == nil,
+          "activity: prefix must be a whole folder")
+    check(ActivityClassifier.provider(aside: "claude-code") == .claude && ActivityClassifier.provider(aside: "openai-codex") == .codex
+          && ActivityClassifier.provider(aside: "xai-grok-oauth") == .grok && ActivityClassifier.provider(aside: "aside") == nil,
+          "activity: Aside provider ids -> services")
+    check(ActivityClassifier.lastProviderId("{\"provider\":\"openai-codex\"}\n{\"provider\":\"claude-code\",\"model\":\"m\"}\n{\"role\":\"x\"}") == "claude-code"
+          && ActivityClassifier.lastProviderId("{\"role\":\"x\"}") == nil, "activity: last provider in a chat log tail")
+    let now2 = t0
+    check(freshnessText(now2, now: now2.addingTimeInterval(30)) == "방금 확인" && freshnessText(now2, now: now2.addingTimeInterval(185)) == "3분 전 확인"
+          && freshnessText(nil) == nil, "freshness text")
 }
 print("RESULT \(passed) mac logic tests passed")

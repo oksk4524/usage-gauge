@@ -30,6 +30,7 @@ final class Quota {
     var lastOk: Date?
     var error: String?         // Korean, shown in the menu
     var transient = false      // network / rate limit / server: heals by itself
+    var rateLimited = false    // HTTP 429 (backs off at least 2 minutes, Retry-After respected)
     var noLogin = false        // the official tool has no saved login on this Mac
     var notInstalled = false   // Antigravity: agy CLI not found
     // Which login produced this value. accountKey is a stable account id; credKey is a one-way hash of the
@@ -181,10 +182,27 @@ enum Usage {
         return Login(access: str(oauth, "accessToken"), expires: ms.isNaN || ms <= 0 ? nil : Date(timeIntervalSince1970: ms / 1000))
     }
 
+    // The login is read once and kept in memory (never on disk, never logged): /usr/bin/security runs again only when
+    // nothing is kept, the kept token expires within 10 minutes, or the endpoint answered 401.
+    private static var claudeCache = TokenCache()
+    static var securityReads = 0   // how often the keychain was read since launch (the log counts these)
+    static func claudeLoginCached(reread: Bool, now: Date = Date()) -> Login? {
+        gate.lock()
+        if reread { claudeCache.invalidate() }
+        if let l = claudeCache.usable(now: now) { gate.unlock(); return l }
+        gate.unlock()
+        let l = readClaude()
+        gate.lock(); claudeCache.store(l, now: now); securityReads += 1; let n = securityReads; gate.unlock()
+        Log.write("claude login: read from the keychain (\(n) since start\(reread ? ", after 401" : ""))")
+        return l
+    }
+    static func forgetClaudeLogin() { gate.lock(); claudeCache.invalidate(); gate.unlock() }
+
     static func claude() -> Quota {
-        var err: String?; var used: Login?; var sawLogin = false
+        var err: String?; var used: Login?; var sawLogin = false; var calls = 0
         let (st, body) = authedGet("https://api.anthropic.com/api/oauth/usage", "anthropic-beta", "oauth-2025-04-20") {
-            let l = readClaude()
+            calls += 1
+            let l = claudeLoginCached(reread: calls > 1)   // the second call is authedGet's retry after a 401
             if l != nil { sawLogin = true }
             guard let login = l, login.error == nil, let a = login.access else { err = l?.error; return nil }
             used = login; return a
@@ -295,7 +313,7 @@ enum Usage {
     }
     static func httpError(_ status: Int) -> Quota {
         if status <= 0 { return .fail("시간 초과(네트워크)", transient: true) }
-        if status == 429 { return .fail("요청 제한(429), 곧 다시 시도", transient: true) }
+        if status == 429 { let q = Quota.fail("요청 제한(429), 곧 다시 시도", transient: true); q.rateLimited = true; return q }
         if status >= 500 { return .fail("서버 오류 \(status)", transient: true) }
         return .fail("요청 실패(HTTP \(status))")
     }
@@ -327,14 +345,36 @@ enum Usage {
         req.setValue("UsageGauge", forHTTPHeaderField: "User-Agent")
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
         let sem = DispatchSemaphore(value: 0)
-        var status = 0; var out: Data?
+        var status = 0; var out: Data?; var retry: String?
         let task = session.dataTask(with: req) { data, resp, _ in
-            if let h = resp as? HTTPURLResponse { status = h.statusCode; out = data.map { $0.count > 512 * 1024 ? $0.prefix(512 * 1024) : $0 } }
+            if let h = resp as? HTTPURLResponse {
+                status = h.statusCode; out = data.map { $0.count > 512 * 1024 ? $0.prefix(512 * 1024) : $0 }
+                if status == 429 || status == 503 { retry = h.value(forHTTPHeaderField: "Retry-After") }
+            }
             sem.signal()
         }
         task.resume()
         if sem.wait(timeout: .now() + timeout + 2) == .timedOut { task.cancel(); return (0, nil) }
+        if let r = retry, let secs = retryAfterSeconds(r) {
+            let prev = Thread.current.threadDictionary[retryKey] as? Double ?? 0
+            Thread.current.threadDictionary[retryKey] = max(prev, secs)
+        }
         return (status, out)
+    }
+    // Retry-After: seconds or an HTTP date. Kept per thread: each service is looked up on its own thread.
+    private static let retryKey = "UsageGauge.retryAfter"
+    static func retryAfterSeconds(_ v: String, now: Date = Date()) -> Double? {
+        let t = v.trimmingCharacters(in: .whitespaces)
+        if let n = Double(t) { return n >= 0 ? n : nil }
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "GMT")
+        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        guard let d = f.date(from: t) else { return nil }
+        return max(0, d.timeIntervalSince(now))
+    }
+    static func clearRetryAfter() { Thread.current.threadDictionary.removeObject(forKey: retryKey) }
+    static func takeRetryAfter() -> TimeInterval? {
+        defer { clearRetryAfter() }
+        return Thread.current.threadDictionary[retryKey] as? Double
     }
     static func parse(_ data: Data?) -> [String: Any]? {
         guard let d = data, !d.isEmpty else { return nil }
@@ -493,4 +533,21 @@ enum SecurityTool {
         }
         return d
     }
+}
+
+// The rule for keeping Claude's login in memory (pure, unit tested). Only a readable login with a token is kept;
+// a token without its own expiry is read again after an hour.
+struct TokenCache {
+    static let refreshBefore: TimeInterval = 10 * 60, noExpiryMaxAge: TimeInterval = 3600
+    private(set) var login: Usage.Login?
+    private(set) var readAt: Date?
+    func usable(now: Date) -> Usage.Login? {
+        guard let l = login, l.error == nil, l.access != nil, let r = readAt else { return nil }
+        if let e = l.expires { return e.timeIntervalSince(now) > TokenCache.refreshBefore ? l : nil }
+        return now.timeIntervalSince(r) < TokenCache.noExpiryMaxAge ? l : nil
+    }
+    mutating func store(_ l: Usage.Login?, now: Date) {
+        if let l = l, l.error == nil, l.access != nil { login = l; readAt = now } else { invalidate() }
+    }
+    mutating func invalidate() { login = nil; readAt = nil }
 }

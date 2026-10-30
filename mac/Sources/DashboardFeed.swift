@@ -122,15 +122,20 @@ enum DashboardFeed {
 
 enum Log {
     static var enabled = true   // tests turn this off so they never touch the real log
+    static let maxSize = 256 * 1024
+    // past 256 KB the log becomes menubar.log.1 (the one before that is dropped) and a new log starts
+    static func rotate(_ path: String) {
+        let fm = FileManager.default, old = path + ".1"
+        try? fm.removeItem(atPath: old)
+        if (try? fm.moveItem(atPath: path, toPath: old)) == nil { try? fm.removeItem(atPath: path) }
+    }
     static func write(_ s: String) {
         guard enabled else { return }
         let line = DashboardFeed.iso(Date()) + " " + s + "\n"
         try? FileManager.default.createDirectory(atPath: Paths.appHome, withIntermediateDirectories: true)
         if let h = FileHandle(forWritingAtPath: Paths.log) {
             h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
-            if let size = (try? FileManager.default.attributesOfItem(atPath: Paths.log))?[.size] as? Int, size > 256 * 1024 {
-                try? FileManager.default.removeItem(atPath: Paths.log)
-            }
+            if let size = (try? FileManager.default.attributesOfItem(atPath: Paths.log))?[.size] as? Int, size > maxSize { rotate(Paths.log) }
         } else {
             FileManager.default.createFile(atPath: Paths.log, contents: Data(line.utf8))
         }
