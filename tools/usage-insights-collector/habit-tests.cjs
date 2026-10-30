@@ -141,13 +141,20 @@ const F=h.rules(input);
  ok('rules: cold restart and compaction items, ranked by 부담, share shown, no model or re-read advice');}
 {// a high re-read multiple alone is not waste: one long healthy conversation, cache always alive
  const healthy=inputOf({claude_aside_local:conv({session:'ok',n:300,step:1500})});assert.deepEqual(h.rules(healthy),[],'well-used cache: no items');
- const ref=h.reference(healthy,[]);assert.deepEqual(Object.keys(ref.table[0]),['source','used','hit','models']);assert.ok(/^\d+%$/.test(ref.table[0].hit),'hit rate in its own column');
+ const ref=h.reference(healthy,[]);assert.deepEqual(Object.keys(ref.table[0]),['source','service','used','hit','models']);assert.equal(ref.table[0].used,'전부','the only source of its service: 전부');assert.ok(/^\d+%$/.test(ref.table[0].hit),'hit rate in its own column');
  assert.ok(/Opus 5\.5 100%/.test(ref.table[0].models)&&!/부담|비중/.test(JSON.stringify(ref)),'model mix is a neutral cell in plain words');assert.ok(ref.notes.some(i=>/Antigravity는 캐시 기록이 없어/.test(i)),'unsupported sources named once');
  assert.ok(ref.notes.some(i=>/5분 기준 1\.25배/.test(i)),'unknown lifetime: 1.25 and said so');
  {const two=inputOf({claude_aside_local:conv({session:'a',n:50}),codex_aside_local:conv({session:'b',n:50,model:'gpt-6-astra',openai:true}),codex_cli_local:conv({session:'c',n:50,model:'gpt-6-astra',openai:true})});two.sources.codex_cli_local.name='Codex 앱';
   const r2=h.reference(two,[]);assert.equal(r2.table.length,3,'one row per source');assert.equal(r2.notes.filter(x=>/가격 미상/.test(x)).length,0,'every model priced: no note');
-  assert.ok(r2.table.every(r=>/^(\d+%|1% 미만)$/.test(r.used)),'한도를 쓴 양 is a share, never a money or token amount');
-  const used=r2.table.map(r=>r.used==='1% 미만'?0:parseInt(r.used,10));assert.ok(Math.abs(used.reduce((x,y)=>x+y,0)-100)<=2,'shares of all sources add up to 100');
+  // separate subscriptions: never shared across services; Claude stands alone (전부), the two OpenAI sources split 100
+  assert.deepEqual(r2.table.map(r=>r.service),['Claude','OpenAI','OpenAI'],'rows grouped by service, Claude first');
+  assert.equal(r2.table[0].used,'전부','single-source service shows 전부');
+  const oa=r2.table.filter(r=>r.service==='OpenAI');assert.ok(oa.every(r=>/^(\d+%|1% 미만)$/.test(r.used)),'한도를 쓴 양 is a share, never a money or token amount');
+  const used=oa.map(r=>r.used==='1% 미만'?0:parseInt(r.used,10));assert.ok(Math.abs(used.reduce((x,y)=>x+y,0)-100)<=1,'shares add up to 100 within one service');
+  {const mix=inputOf({claude_aside_local:conv({session:'m1',n:200}),claude_cli_local:conv({session:'m2',n:5}),codex_aside_local:conv({session:'m3',n:50,model:'gpt-6-astra',openai:true}),aside_aside_local:conv({session:'m4',n:50,model:'gpt-6-luna',openai:true})});
+   mix.sources.claude_cli_local.name='Claude Code';mix.sources.aside_aside_local.name='Aside 자체 모델';const rm=h.reference(mix,[]);
+   const cl=rm.table.filter(r=>r.service==='Claude').map(r=>r.used==='1% 미만'?0:parseInt(r.used,10));assert.equal(cl.length,2);assert.ok(Math.abs(cl[0]+cl[1]-100)<=1&&cl[0]>cl[1],'Claude shares only within Claude');
+   assert.equal(rm.table.find(r=>r.source==='Aside 자체 모델').service,'OpenAI','Aside 자체 모델 on GPT joins OpenAI');assert.ok(/같은 서비스 안에서/.test(h.BASIS)&&!/모든 출처를 더한/.test(h.BASIS),'basis says shares stay within a service');}
   const nova=inputOf({codex_aside_local:conv({session:'n1',n:50,model:'gpt-7-nova',openai:true}),codex_cli_local:[...conv({session:'n2',n:50,model:'gpt-7-nova',openai:true}),...conv({session:'n3',n:50,model:'gpt-6-astra',openai:true})]});
   nova.sources.codex_cli_local.name='Codex 앱';const r3=h.reference(nova,[]);
   assert.equal(r3.notes.filter(x=>/GPT-7 Nova는 공개 요금을 찾지 못해 가격 미상으로 두고 비율에서 뺐어요/.test(x)).length,1,'unpriced models noted once');

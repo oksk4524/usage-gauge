@@ -29,8 +29,8 @@ const P=x=>x<1?'1% 미만':Math.round(x)+'%',PN=x=>x<1?1:Math.round(x);
 const fmt=n=>{n=Math.round(n);return n>=1e8?(Math.round(n/1e7)/10)+'억':n>=1e4?Math.round(n/1e4)+'만':String(n);};
 
 // ---- price table: public API list prices, USD per 1M tokens, standard tier, short prompts (checked 2026-10-31) ----
-// Every model is weighted by its own absolute prices, so models and sources share one unit and their shares are
-// comparable. The page shows shares and percentages only, never money. Units per request:
+// Every model is weighted by its own absolute prices, so models within a source and sources within one service share a
+// unit; subscriptions have separate limits, so shares are never taken across services. The page shows shares and percentages only, never money. Units per request:
 //   new input x in + cache write x in x (Claude 1.25 five-minute, 2 one-hour; OpenAI and xAI 1) + cache read x read + output x out
 // Sources (checked 2026-10-31): Claude platform.claude.com/docs/en/models (Opus 5.5, Sonnet 5.5 and Haiku 5.5 pages,
 // list price PDF effective 2026-10-22); OpenAI developers.openai.com/api/docs/models/<id>, the GPT-6.1 Sol and GPT-5.6
@@ -69,7 +69,7 @@ function modelLabel(id){const s=String(id||'');if(!s||s==='unknown')return '모�
   m=s.match(/^gpt-([\d.]+)-?(.*)$/i);if(m)return 'GPT-'+m[1]+(m[2]?' '+m[2].split('-').map(w=>w&&w[0].toUpperCase()+w.slice(1)).join(' '):'');
   m=s.match(/^(grok|gemini)-(.+)$/i);if(m)return m[1][0].toUpperCase()+m[1].slice(1)+' '+m[2];return s.slice(0,40);}
 // on-screen wording (owner, 2026-10-30): "한도를 쓴 양", never "부담", "비중" or "가중"; the weights stay in PRICES above
-const BASIS='캐시 적중은 높을수록 좋아요. 한도를 쓴 양은 모델마다 공개 API 요금으로 새 입력, 다시 읽기(캐시), 새로 저장(캐시), AI가 쓴 답을 쳐서 비율로만 보여 주는 요금 기준 추정이에요. 표는 모든 출처를 더한 것 중 몫이고, 지난 30일 기록이에요.';
+const BASIS='캐시 적중은 높을수록 좋아요. 한도를 쓴 양은 모델마다 공개 API 요금으로 새 입력, 다시 읽기(캐시), 새로 저장(캐시), AI가 쓴 답을 쳐서 비율로만 보여 주는 요금 기준 추정이에요. 몫은 같은 서비스 안에서 나눈 것이에요. 지난 30일 기록이에요.';
 // house writing rules (WRITING.md at the repository root, copied next to the code by the installers); the model follows them every time
 function writingRules(){for(const p of [path.resolve(__dirname,'..','..','WRITING.md')]){try{const t=fs.readFileSync(p,'utf8').replace(/^#.*\n+/,'').trim();if(t)return t;}catch{}}return '해요체로 짧게 써요. 가운데 점은 쓰지 말고 나열은 쉼표로 써요. "한도를 쓴 양"이라고 쓰고 "부담", "비중", "가중"은 쓰지 않아요.';}
 
@@ -240,13 +240,22 @@ const COMPACT_GROUPS=[['Aside',[...ASIDE_SETS],'Aside 설정에서 자동 압축
 // Reference (not advice): one table row per source (한도를 쓴 양, 캐시 적중, 모델별로 한도를 쓴 양) and short notes said once:
 // models without a listed price, assumed cache lifetime, the compaction "실험해 볼 거리", unsupported sources. BASIS is the one shared line.
 const share0=x=>x<1?'1% 미만':x+'%';
+// Each subscription (Claude, ChatGPT/Codex, Grok) has its own limit, so sources are never added across services: rows are
+// grouped by service and 한도를 쓴 양 is the source's share within its own service ("전부" when it is the only source).
+// A share that rounds to 100% while another source of the service used some reads 99%.
+// Aside 자체 모델 joins a service by the family of its models (GPT = OpenAI), else it stands alone.
+const SERVICES=[['claude','Claude'],['openai','OpenAI'],['xai','Grok']];
+function serviceOf(key,s){if(/^claude_/.test(key))return 'claude';if(/^codex_/.test(key))return 'openai';if(/^grok_/.test(key))return 'xai';
+  const labels=[...(s.byModel||[]),...(s.unpriced||[])].map(m=>m.label),fam=l=>/^GPT-/.test(l)?'openai':/^(Claude|Opus|Sonnet|Haiku)\b/.test(l)?'claude':/^Grok/.test(l)?'xai':null;
+  const fs_=new Set(labels.map(fam));return fs_.size===1&&!fs_.has(null)?[...fs_][0]:'own:'+key;}
 function reference(input,findings){const table=[],notes=[];
   const list=Object.entries(input.sources).sort((a,b)=>b[1].total-a[1].total);
-  // 한도를 쓴 양 column: the source's share of all sources together (one price unit, so sources compare); models: shares
-  // within the source; a model without a listed price shows its tokens and stays out of the shares
-  const grand=list.reduce((n,[,s])=>n+(s.total>0?s.total:0),0);
-  for(const [,s] of list){const known=s.byModel.slice(0,4).map(m=>m.label+' '+share0(m.share)),unp=(s.unpriced||[]).slice(0,2).map(m=>m.label+' 가격 미상('+fmt(m.tokens)+' 토큰)');
-    table.push({source:s.name,used:s.total>0?P(pct1(s.total,grand)):'가격 미상',hit:s.hitPct+'%',models:[...known,...unp].join(', ')});}
+  // models: shares within the source; a model without a listed price shows its tokens and stays out of the shares
+  const groups=new Map();for(const [k,s] of list){const g=serviceOf(k,s);if(!groups.has(g))groups.set(g,[]);groups.get(g).push([k,s]);}
+  const order=[...SERVICES.map(([id])=>id).filter(id=>groups.has(id)),...[...groups.keys()].filter(id=>id.startsWith('own:'))];
+  for(const g of order){const rows=groups.get(g),sum=rows.reduce((n,[,s])=>n+(s.total>0?s.total:0),0),svc=(SERVICES.find(([id])=>id===g)||[,rows[0][1].name])[1];
+    for(const [,s] of rows){const known=s.byModel.slice(0,4).map(m=>m.label+' '+share0(m.share)),unp=(s.unpriced||[]).slice(0,2).map(m=>m.label+' 가격 미상('+fmt(m.tokens)+' 토큰)');
+      table.push({source:s.name,service:svc,used:!(s.total>0)?'가격 미상':rows.length===1?'전부':P(Math.min(pct1(s.total,sum),rows.some(([,o])=>o!==s&&o.total>0)?99:100)),hit:s.hitPct+'%',models:[...known,...unp].join(', ')});}}
   const unknown=[...new Set(list.flatMap(([,s])=>(s.unpriced||[]).map(m=>m.label)))];
   if(unknown.length){const u=unknown.slice(0,6);notes.push(u.join(', ')+eun(u[u.length-1])+' 공개 요금을 찾지 못해 가격 미상으로 두고 비율에서 뺐어요.');}
   for(const [,s] of list){if(s.ttlAssumed==='1h')notes.push(`${s.name}${eun(s.name)} 캐시 수명이 기록에 없지만 10분 넘게 쉬어도 캐시가 남아 있어 새로 저장(캐시)을 1시간 기준 2배로 셌어요.`);
