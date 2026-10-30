@@ -28,16 +28,21 @@ const fmt=n=>{n=Math.round(n);return n>=1e8?(Math.round(n/1e7)/10)+'억':n>=1e4?
 
 // ---- price ratios (input = 1). 공개 API 요금 비율 기준, 구독 한도 실제 차감 방식은 비공개라 추정. ----
 // Anthropic (Opus, Sonnet, Haiku): output 5x input, cache read 0.1x, cache write 1.25x (5-minute) or 2x (1-hour).
-// OpenAI GPT-5 family: output 8x input, cached input 0.1x, no extra charge for cache writes.
-// xAI Grok 4 family: output 5x input, cached input 0.25x.
+// OpenAI (every gpt-, o-series and codex model): no extra charge for cache writes, so a cache miss is new input at 1x
+// (the logs report it as input; cacheCreate stays 0) and cached input is 0.1x. GPT-5 family output 8x; newer models
+// without a published price here (GPT-6, GPT-6.1) keep the same input and cache rule, output 4x and a note.
+// xAI Grok: same principle as OpenAI (no cache-write charge, miss = 1x input), cached input 0.25x; Grok 4 output 5x,
+// other Grok models output 4x and a note. Assumption from the public xAI price page, not billing-verified.
 // Other models (for example a newer OpenAI model without a published price here): output 4x and a note, read 0.1x.
 const PRICE_NOTE='공개 API 요금 비율 기준, 구독 한도 실제 차감 방식은 비공개라 추정';
 const PRICES=[
   {family:'Claude',re:/claude|opus|sonnet|haiku/i,out:5,read:0.1,write5m:1.25,write1h:2},
   {family:'GPT-5',re:/^gpt-5/i,out:8,read:0.1,write:1},
-  {family:'Grok 4',re:/^grok-4/i,out:5,read:0.25,write:1}];
+  {family:'Grok 4',re:/^grok-4/i,out:5,read:0.25,write:1},
+  {family:'OpenAI',re:/^(gpt-|o\d|codex)/i,out:4,read:0.1,write:1,known:false},
+  {family:'xAI',re:/^grok/i,out:4,read:0.25,write:1,known:false}];
 const UNKNOWN_OUT=4,UNKNOWN_TTL_WRITE=1.25;
-function priceFor(dataset,model){const m=String(model||'');const p=PRICES.find(x=>x.re.test(m));if(p)return {...p,known:true};
+function priceFor(dataset,model){const m=String(model||'');const p=PRICES.find(x=>x.re.test(m));if(p)return {...p,known:p.known!==false};
   if(/^claude/.test(dataset))return {...PRICES[0],known:true};   // Claude logs with no model name are still Claude prices
   return {family:'?',out:UNKNOWN_OUT,read:0.1,write:/^claude/.test(dataset)?UNKNOWN_TTL_WRITE:1,known:false};}
 function modelLabel(id){const s=String(id||'');if(!s||s==='unknown')return '모델 기록 없음';
@@ -45,55 +50,89 @@ function modelLabel(id){const s=String(id||'');if(!s||s==='unknown')return '모�
   m=s.match(/^gpt-([\d.]+)-?(.*)$/i);if(m)return 'GPT-'+m[1]+(m[2]?' '+m[2].split('-').map(w=>w&&w[0].toUpperCase()+w.slice(1)).join(' '):'');
   m=s.match(/^(grok|gemini)-(.+)$/i);if(m)return m[1][0].toUpperCase()+m[1].slice(1)+' '+m[2];return s.slice(0,40);}
 // on-screen wording (owner, 2026-10-30): "한도를 쓴 양", never "부담", "비중" or "가중"; the weights stay in PRICES above
-const BASIS='다시 읽기(캐시)는 거의 10분의 1, AI가 쓴 답은 몇 배로 쳐요. 요금 기준 추정, 지난 30일 기록이고 출처끼리 더하지 않아요.';
+const BASIS='캐시 적중은 높을수록 좋아요. 한도를 쓴 양은 새 입력 1배, 다시 읽기(캐시) 10분의 1(Grok 4분의 1), 새로 저장(캐시) 1배에서 2배, AI가 쓴 답 몇 배로 쳐서 요금 기준 추정으로 셌고, 지난 30일 기록이며 출처끼리 더하지 않아요.';
 // house writing rules (WRITING.md at the repository root, copied next to the code by the installers); the model follows them every time
 function writingRules(){for(const p of [path.resolve(__dirname,'..','..','WRITING.md')]){try{const t=fs.readFileSync(p,'utf8').replace(/^#.*\n+/,'').trim();if(t)return t;}catch{}}return '해요체로 짧게 써요. 가운데 점은 쓰지 말고 나열은 쉼표로 써요. "한도를 쓴 양"이라고 쓰고 "부담", "비중", "가중"은 쓰지 않아요.';}
 
 // ---- 1. measure one dataset from its request records (sorted by session, then time) ----
 const EV={minPrev:20000,idleMin:5,compactPrev:100000};
-function writeBurden(r,p){const cw=r.cacheCreate||0;if(p.write!=null)return {b:cw*p.write,unknown:0};const k1=Math.min(cw,r.cw1h||0),k5=Math.min(cw-k1,r.cw5m||0),rest=cw-k1-k5;return {b:k5*p.write5m+k1*p.write1h+rest*UNKNOWN_TTL_WRITE,unknown:rest,k1,k5};}
-function analyze(dataset,rows){
+// Cache lifetime from the records (audit, 2026-10-30): for consecutive requests in the same conversation and model, with
+// a previous context of at least 2만 tokens, the next request is a hit when it re-reads at least half of the previous
+// context from cache and a miss when it re-reads less than half and writes at least half again (a shrink, which is a
+// compaction, is neither). Hit rate per idle-gap bucket; the lifetime is the start of the first bucket (5 minutes and
+// up, at least LIFE.minEval samples) where the hit rate falls below 50%. It counts as "기록으로 확인함" only when that
+// bucket and the last bucket before it that still had 50% or more each hold at least LIFE.confirmN samples.
+const GAP_BUCKETS=[[0,5],[5,10],[10,20],[20,30],[30,45],[45,60],[60,90],[90,Infinity]];
+const LIFE={minEval:5,confirmN:20,hit:50};
+function gapTable(hits,misses){return GAP_BUCKETS.map(([from,to])=>{const h=hits.filter(g=>g>=from&&g<to).length,m=misses.filter(g=>g>=from&&g<to).length;return {from,to:to===Infinity?null:to,n:h+m,hits:h,hitPct:h+m?Math.round(100*h/(h+m)):null};});}
+function lifetimeOf(table){let last=null;for(const b of table){if(b.from<5||b.n<LIFE.minEval)continue;if(b.hitPct<LIFE.hit)return {minutes:b.from,confirmed:b.n>=LIFE.confirmN&&!!last&&last.n>=LIFE.confirmN,below:b,above:last};last=b;}return null;}
+const EVIDENCE={recorded:'기록으로 확인함',estimate:'추정'};
+function writeBurden(r,p,unknownWrite){const cw=r.cacheCreate||0;if(p.write!=null)return {b:cw*p.write,unknown:0};const k1=Math.min(cw,r.cw1h||0),k5=Math.min(cw-k1,r.cw5m||0),rest=cw-k1-k5;return {b:k5*p.write5m+k1*p.write1h+rest*unknownWrite,unknown:rest,k1,k5};}
+function measure(dataset,rows,unknownWrite){
   const ctx=r=>(r.input||0)+(r.cacheRead||0)+(r.cacheCreate||0);
-  const t={total:0,input:0,write:0,read:0,output:0,inTok:0,readTok:0,writeTok:0,unknownTtl:0,w1h:0,w5m:0},models=new Map(),outUnknown=new Set();
-  const cold={n:0,tokens:0,burden:0,gaps:[]},sw={n:0,tokens:0,burden:0},comp={n:0,tokens:0,burden:0,pre:[],post:[],cost:[]},hitGaps=[],missGaps=[];
+  const t={total:0,input:0,write:0,read:0,output:0,outTok:0,inTok:0,readTok:0,writeTok:0,unknownTtl:0,w1h:0,w5m:0},models=new Map(),outUnknown=new Set();
+  const misses=[],sw={n:0,tokens:0,burden:0},comp={n:0,tokens:0,burden:0,pre:[],post:[],cost:[]},hitGaps=[],missGaps=[];
   const sess=[];let cur=null,prev=null;
-  for(const r of rows){const p=priceFor(dataset,r.model),w=writeBurden(r,p),b=(r.input||0)+w.b+(r.cacheRead||0)*p.read+(r.output||0)*p.out;r._b=b;r._p=p;r._w=w.b;
-    t.total+=b;t.input+=r.input||0;t.write+=w.b;t.read+=(r.cacheRead||0)*p.read;t.output+=(r.output||0)*p.out;t.inTok+=r.input||0;t.readTok+=r.cacheRead||0;t.writeTok+=r.cacheCreate||0;t.unknownTtl+=w.unknown;t.w1h+=w.k1||0;t.w5m+=w.k5||0;
+  for(const r of rows){const p=priceFor(dataset,r.model),w=writeBurden(r,p,unknownWrite),b=(r.input||0)+w.b+(r.cacheRead||0)*p.read+(r.output||0)*p.out;r._b=b;r._p=p;r._w=w.b;r._kind=null;
+    t.total+=b;t.input+=r.input||0;t.write+=w.b;t.read+=(r.cacheRead||0)*p.read;t.output+=(r.output||0)*p.out;t.outTok+=r.output||0;t.inTok+=r.input||0;t.readTok+=r.cacheRead||0;t.writeTok+=r.cacheCreate||0;t.unknownTtl+=w.unknown;t.w1h+=w.k1||0;t.w5m+=w.k5||0;
     if(!p.known)outUnknown.add(modelLabel(r.model));const ml=modelLabel(r.model);models.set(ml,(models.get(ml)||0)+b);
     if(!cur||cur.id!==r.session){cur={id:r.session,rows:[]};sess.push(cur);prev=null;}cur.rows.push(r);
-    if(prev&&r.session&&r.session!=='unknown'){const pc=ctx(prev),c=ctx(r),gap=(r.at-prev.at)/60000,same=!(r.model&&prev.model&&r.model!=='unknown'&&prev.model!=='unknown'&&r.model!==prev.model),rew=(r.input||0)+(r.cacheCreate||0),rb=(r.input||0)+r._w;r._kind=null;
+    if(prev&&r.session&&r.session!=='unknown'){const pc=ctx(prev),c=ctx(r),gap=(r.at-prev.at)/60000,same=!(r.model&&prev.model&&r.model!=='unknown'&&prev.model!=='unknown'&&r.model!==prev.model),rew=(r.input||0)+(r.cacheCreate||0),rb=(r.input||0)+r._w;
       if(pc>=EV.minPrev){
         if((r.cacheRead||0)>=pc*0.5){if(same)hitGaps.push(gap);}
-        else if(rew>=pc*0.5){if(!same){sw.n++;sw.tokens+=rew;sw.burden+=rb;r._kind='switch';}else{missGaps.push(gap);if(gap>=EV.idleMin){cold.n++;cold.tokens+=rew;cold.burden+=rb;cold.gaps.push(gap);r._kind='cold';}}}
+        else if(rew>=pc*0.5){if(!same){sw.n++;sw.tokens+=rew;sw.burden+=rb;r._kind='switch';}else{missGaps.push(gap);misses.push({gap,tokens:rew,burden:rb,r});}}
         else if(same&&c<pc*0.5&&pc>=EV.compactPrev){comp.n++;comp.tokens+=rew;comp.burden+=rb;comp.pre.push(pc);comp.post.push(c);comp.cost.push(rb);r._kind='compact';}}}
     prev=r;}
+  return {t,models,outUnknown,misses,sw,comp,hitGaps,missGaps,sess};}
+function analyze(dataset,rows){
+  const claude=/^claude/.test(dataset);let m=measure(dataset,rows,UNKNOWN_TTL_WRITE),ttlAssumed=null;
   const med=a=>{if(!a.length)return null;const s=[...a].sort((x,y)=>x-y);return s[Math.floor(s.length/2)];};
-  // cache lifetime: recorded (1-hour / 5-minute writes) first, else measured: the last 5-minute window, counted from 0,
-  // where re-reads after that idle gap still outnumber full re-writes (gaps under 5 minutes say nothing about it)
-  let lifetime=null,lifeFrom=null;if(t.w1h>t.writeTok*0.5){lifetime=60;lifeFrom='recorded';}else if(t.w5m>t.writeTok*0.5){lifetime=5;lifeFrom='recorded';}
-  else{for(let m=10;m<=180;m+=5){const h=hitGaps.filter(g=>g>=m-5&&g<m).length,x=missGaps.filter(g=>g>=m-5&&g<m).length;if(h+x<3)continue;if(h>=x)lifetime=m;else break;}if(lifetime!=null)lifeFrom='measured';}
-  const byModel=[...models].filter(([,b])=>b>0).sort((a,b)=>b[1]-a[1]).map(([label,b])=>({label,share:pct(b,t.total)}));
-  const readRatio=rows.length?rows[0]._p.read:0.1;
-  return {total:t.total,parts:{input:t.input,write:t.write,read:t.read,output:t.output},hitPct:pct(t.readTok,t.readTok+t.inTok+t.writeTok),readRatio,
-    ttlUnknown:t.writeTok>0&&t.unknownTtl>t.writeTok*0.5&&/^claude/.test(dataset),outUnknown:[...outUnknown],byModel,lifetime,lifeFrom,
-    cold:{n:cold.n,tokens:cold.tokens,burden:cold.burden,medianGap:cold.gaps.length?Math.round(med(cold.gaps)):null},switch:sw,
-    compact:{n:comp.n,tokens:comp.tokens,burden:comp.burden,pre:med(comp.pre),post:med(comp.post),cost:med(comp.cost)},sessions:sess};}
+  const table=gapTable(m.hitGaps,m.missGaps);
+  // lifetime: recorded (1-hour / 5-minute writes) first, else measured from the gap buckets
+  let lifetime=null,lifeFrom=null,lifeConfirmed=false,life=null;
+  if(m.t.w1h>m.t.writeTok*0.5){lifetime=60;lifeFrom='recorded';lifeConfirmed=true;}else if(m.t.w5m>m.t.writeTok*0.5){lifetime=5;lifeFrom='recorded';lifeConfirmed=true;}
+  else{life=lifetimeOf(table);if(life){lifetime=life.minutes;lifeFrom='measured';lifeConfirmed=life.confirmed;}}
+  // Claude writes with no recorded lifetime: a cache that clearly outlives 5 minutes (gaps of 10 to 30 minutes, at least
+  // 20 samples, half or more still hits) is a 1-hour cache, so those writes count 2x instead of 1.25x (요금 기준 추정)
+  const mid=table.filter(b=>b.from>=10&&b.from<30),midN=mid.reduce((n,b)=>n+b.n,0),midH=mid.reduce((n,b)=>n+b.hits,0);
+  if(claude&&lifeFrom!=='recorded'&&m.t.unknownTtl>m.t.writeTok*0.5&&midN>=LIFE.confirmN&&midH*2>=midN){m=measure(dataset,rows,2);ttlAssumed='1h';}
+  const t=m.t;
+  // cold restarts: misses after an idle gap at or past the lifetime (or 5 minutes when it is unknown); coming back sooner
+  // turns these into re-reads. Misses inside the lifetime have another cause and are counted apart, never as advice.
+  const floor=lifetime!=null?Math.max(EV.idleMin,lifetime):EV.idleMin,cold={n:0,tokens:0,burden:0,gaps:[]},inside={n:0,tokens:0,burden:0};
+  for(const x of m.misses){if(x.gap>=floor){cold.n++;cold.tokens+=x.tokens;cold.burden+=(x.r.input||0)+x.r._w;cold.gaps.push(x.gap);x.r._kind='cold';}else if(x.gap>=EV.idleMin){inside.n++;inside.tokens+=x.tokens;inside.burden+=(x.r.input||0)+x.r._w;}}
+  const pool=(lo,hi)=>{const bs=table.filter(b=>b.from>=lo&&(hi==null||b.from<hi)),n=bs.reduce((s,b)=>s+b.n,0),h=bs.reduce((s,b)=>s+b.hits,0);return {n,hitPct:n?Math.round(100*h/n):null};};
+  const byModel=[...m.models].filter(([,b])=>b>0).sort((a,b)=>b[1]-a[1]).map(([label,b])=>({label,share:pct(b,t.total)}));
+  const readRatio=rows.length?rows[0]._p.read:0.1,writeRatio=rows.length?(rows[0]._p.write!=null?rows[0]._p.write:ttlAssumed==='1h'?2:UNKNOWN_TTL_WRITE):1;
+  return {total:t.total,parts:{input:t.input,write:t.write,read:t.read,output:t.output},hitPct:pct(t.readTok,t.readTok+t.inTok+t.writeTok),readRatio,writeRatio,outRatio:t.outTok?t.output/t.outTok:UNKNOWN_OUT,
+    ttlUnknown:t.writeTok>0&&t.unknownTtl>t.writeTok*0.5&&claude,ttlAssumed,outUnknown:[...m.outUnknown],byModel,lifetime,lifeFrom,lifeConfirmed,gapTable:table,
+    hitBefore:lifetime!=null?pool(EV.idleMin,lifetime):null,hitAfter:lifetime!=null?pool(lifetime,null):null,
+    cold:{n:cold.n,tokens:cold.tokens,burden:cold.burden,medianGap:cold.gaps.length?Math.round(med(cold.gaps)):null},coldInside:inside,switch:m.sw,
+    compact:{n:m.comp.n,tokens:m.comp.tokens,burden:m.comp.burden,pre:med(m.comp.pre),post:med(m.comp.post),cost:med(m.comp.cost)},sessions:m.sess};}
 
 // Replays the recorded conversations with a different compaction point: context grows by the recorded steps, a
-// compaction drops it to the measured post-compaction size and costs the measured rewrite plus one full read of the
-// conversation for the summary call (that call is not in the records). Every request reads its context from cache.
-function replay(a,T){let total=0,n=0;const B=a.compact.post,C=a.compact.cost,read=a.readRatio;
-  for(const s of a.sessions){const ctx=r=>(r.input||0)+(r.cacheRead||0)+(r.cacheCreate||0);let c=ctx(s.rows[0]);if(c>T){n++;total+=C+read*c;c=B;}total+=read*c;
-    for(let i=1;i<s.rows.length;i++){const r=s.rows[i],d=r._kind?0:Math.max(0,ctx(r)-ctx(s.rows[i-1]));c+=d;if(c>T){n++;total+=C+read*c;c=B;}total+=read*c;}}
+// compaction drops it to the measured post-compaction size and costs the measured rewrite plus the summary call, which
+// is not in the records: it reads the whole conversation (from cache, or at 1x when `summaryIn` is 'full') and writes
+// a summary of SUMMARY_OUT tokens at the output ratio. `reread` = tokens the agent reads again after each summary
+// (unknown, not in the records): written to cache once and carried in the context afterwards. Every other request reads
+// its context from cache.
+// Summary size: median of the 226 compaction summaries in this Mac's Aside conversations (2026-10-30), 7,597 characters,
+// about 3,400 tokens (Korean syllable 1 token, other characters 3.5 per token). An estimate, the summaries carry no token count.
+const SUMMARY_OUT=3400,REREAD_TEST=50000;
+function replay(a,T,{summaryIn='read',reread=0,summaryOut=SUMMARY_OUT}={}){let total=0,n=0;const B=a.compact.post,C=a.compact.cost,read=a.readRatio,inR=summaryIn==='full'?1:read,out=a.outRatio||UNKNOWN_OUT,wr=a.writeRatio||1;
+  const fire=c=>{n++;total+=C+inR*c+out*summaryOut+wr*reread;return B+reread;};
+  for(const s of a.sessions){const ctx=r=>(r.input||0)+(r.cacheRead||0)+(r.cacheCreate||0);let c=ctx(s.rows[0]);if(c>T)c=fire(c);total+=read*c;
+    for(let i=1;i<s.rows.length;i++){const r=s.rows[i],d=r._kind?0:Math.max(0,ctx(r)-ctx(s.rows[i-1]));c+=d;if(c>T)c=fire(c);total+=read*c;}}
   return {total,n};}
 // The replay does not see the extra reading an agent does after each summary, so candidates stop at half the window.
 const COMPACT_CANDIDATES=[50,60,70,80,90,95];
 function compactionCurve(a,setting){if(!setting||a.compact.n<3||!a.compact.pre||!a.compact.post||a.compact.post>=a.compact.pre)return null;
-  const T=a.compact.pre,base=replay(a,T),cand=[];
+  const T=a.compact.pre,base=replay(a,T),cand=[],full={summaryIn:'full'},rr={reread:REREAD_TEST},baseFull=replay(a,T,full),baseRr=replay(a,T,rr);
   if(setting.percent){for(const q of COMPACT_CANDIDATES)if(q!==setting.percent)cand.push({label:q,T:T*q/setting.percent});}
   else for(const f of [0.6,0.7,0.8,0.9,1.1])cand.push({label:Math.round(T*f/1e4)*1e4,T:T*f});
-  const results=cand.filter(c=>c.T>a.compact.post*1.5).map(c=>{const r=replay(a,c.T),save=base.total-r.total;return {label:c.label,lower:c.T<T,n:r.n,save,saveShare:pct1(save,a.total)};});
-  return results.length?{current:setting.percent||Math.round(T/1e4)*1e4,unit:setting.percent?'%':'tokens',replayCompactions:base.n,results}:null;}
+  const results=cand.filter(c=>c.T>a.compact.post*1.5).map(c=>{const r=replay(a,c.T),save=base.total-r.total,sf=baseFull.total-replay(a,c.T,full).total,sr=baseRr.total-replay(a,c.T,rr).total;
+    return {label:c.label,lower:c.T<T,n:r.n,save,saveShare:pct1(save,a.total),saveFullShare:pct1(sf,a.total),saveRereadShare:pct1(sr,a.total)};});
+  return results.length?{current:setting.percent||Math.round(T/1e4)*1e4,unit:setting.percent?'%':'tokens',replayCompactions:base.n,summaryOut:SUMMARY_OUT,rereadTest:REREAD_TEST,results}:null;}
 // One setting can cover several sources (Aside's point applies to every Aside model): pick the gentlest change that keeps
 // at least 80% of each source's best saving and makes no source worse; null when nothing saves 3% of a source's total.
 function pickCompaction(curves){const labels=[...new Set(curves.flatMap(c=>c.results.map(r=>r.label)))],cur=curves[0].current;
@@ -104,6 +143,10 @@ function pickCompaction(curves){const labels=[...new Set(curves.flatMap(c=>c.res
   const near=l=>Math.abs((typeof l==='number'?l:0)-cur);
   const pick=(good.length?good:ok).sort((x,y)=>near(x)-near(y))[0];
   return {pick,lower:at(curves[0],pick).lower,per:curves.map(c=>({...at(c,pick)}))};}
+// Advice only when the saving is large and survives the unknowns: at least 10% of every source's total with the summary
+// call counted, also when that call reads at 1x, and also when the agent reads REREAD_TEST tokens again after each summary.
+// Otherwise it is only "실험해 볼 거리" in the reference notes, never a settings instruction.
+function compactionSolid(p){return p.per.every(r=>r.saveShare>=THRESH.compactAdvice&&r.saveFullShare>=THRESH.compactAdvice&&r.saveRereadShare>=THRESH.compactAdvice);}
 
 // ---- 2. input: per source totals, events and settings (index = this PC's request records, last 30 days) ----
 function buildInput({snap,names,indexPath,home=os.homedir(),now=Date.now()}){
@@ -126,40 +169,59 @@ function buildInput({snap,names,indexPath,home=os.homedir(),now=Date.now()}){
   return input;}
 
 // ---- 3. rules: which items appear (mechanical cache loss only), with the numbers that justify them ----
-const THRESH={coldShare:3,switchShare:0.5,switchMin:2,compactSave:3};
+const THRESH={coldShare:3,switchShare:0.5,switchMin:2,compactSave:3,compactAdvice:10};
+const eun=name=>{const c=String(name).slice(-1).charCodeAt(0);return c>=0xac00&&c<=0xd7a3?((c-0xac00)%28?'은':'는'):'는';};
 function rules(input){const F=[];
-  const add=(id,source,impact,facts,fixed)=>F.push({id,source,impact,facts,shares:[PN(facts.shareRaw)],fixed});
+  const add=(id,source,impact,facts,fixed,evidence)=>F.push({id,source,impact,facts,shares:[PN(facts.shareRaw)],fixed,evidence});
   for(const [k,s] of Object.entries(input.sources)){const share=x=>pct1(x,s.total);
-    if(s.cold.n>=3&&share(s.cold.burden)>=THRESH.coldShare){const life=s.lifetime;
-      add('cold-'+k,s.name,s.cold.burden,{source:s.name,restarts:s.cold.n,burden:Math.round(s.cold.burden),shareRaw:share(s.cold.burden),share:PN(share(s.cold.burden)),cacheMinutes:life,readRatio:s.readRatio},
-        {criterion:1,title:`${s.name}: 캐시가 살아 있을 때 이어 쓰기`,why:`오래 쉬다 돌아와 캐시가 만료돼 대화 전체를 새로 저장(캐시)한 게 ${s.cold.n}번이에요. 한도를 쓴 양은 ${fmt(s.cold.burden)}, ${s.name} 전체의 ${P(share(s.cold.burden))}예요.${life?` 기록상 캐시는 대략 ${life}분까지 살아 있었어요.`:''}`,
-         how:life?`대략 ${life}분 안에 이어서 쓰면 다시 읽기(캐시)로 끝나요. 오래 쉴 거면 정리해 두고 새 대화로 시작해요.`:`캐시가 살아 있을 때 이어서 써요. 오래 쉴 거면 정리해 두고 새 대화로 시작해요.`});}
+    if(s.cold.n>=3&&share(s.cold.burden)>=THRESH.coldShare){const life=s.lifetime,hb=s.hitBefore&&s.hitBefore.hitPct,ha=s.hitAfter&&s.hitAfter.hitPct,sh=P(share(s.cold.burden));
+      const ev=life!=null&&(s.lifeFrom==='recorded'||s.lifeConfirmed)?EVIDENCE.recorded:EVIDENCE.estimate;
+      add('cold-'+k,s.name,s.cold.burden,{source:s.name,restarts:s.cold.n,burden:Math.round(s.cold.burden),shareRaw:share(s.cold.burden),share:PN(share(s.cold.burden)),cacheMinutes:life,hitBefore:hb,hitAfter:ha,readRatio:s.readRatio},
+        life?{criterion:1,title:`${s.name}${eun(s.name)} ${life}분 안에 이어 쓰면 한도를 최대 ${sh} 아껴요`,
+          why:`${life}분 넘게 쉬었다 이어 써서 대화 전체를 새로 저장(캐시)한 게 ${s.cold.n}번, 이때 한도를 쓴 양은 ${fmt(s.cold.burden)}이에요. 쉬는 걸 다 피할 수는 없어서 ${sh}는 최대치예요.${hb!=null&&ha!=null?` 기록상 ${life}분 안에 이어 쓰면 ${hb}%가 다시 읽기(캐시)였고, 넘기면 ${ha}%였어요.`:''}`,
+          how:`${life}분 안에 이어서 쓰면 다시 읽기(캐시)로 끝나요. 오래 쉴 거면 정리해 두고 새 대화로 시작해요.`}
+        :{criterion:1,title:`${s.name}${eun(s.name)} 캐시가 살아 있을 때 이어 쓰면 한도를 최대 ${sh} 아껴요`,
+          why:`오래 쉬다 돌아와 대화 전체를 새로 저장(캐시)한 게 ${s.cold.n}번, 이때 한도를 쓴 양은 ${fmt(s.cold.burden)}이에요. 쉬는 걸 다 피할 수는 없어서 ${sh}는 최대치예요.`,
+          how:'캐시가 살아 있을 때 이어서 써요. 오래 쉴 거면 정리해 두고 새 대화로 시작해요.'},ev);}
     if(s.switch.n>=THRESH.switchMin&&share(s.switch.burden)>=THRESH.switchShare)
       add('switch-'+k,s.name,s.switch.burden,{source:s.name,switches:s.switch.n,burden:Math.round(s.switch.burden),shareRaw:share(s.switch.burden),share:PN(share(s.switch.burden))},
-        {criterion:2,title:`${s.name}: 모델은 대화 처음에 정하기`,why:`대화 중간에 모델을 바꿔 대화 전체를 새로 저장(캐시)한 게 ${s.switch.n}번이에요. 한도를 쓴 양은 ${fmt(s.switch.burden)}, ${s.name} 전체의 ${P(share(s.switch.burden))}예요.`,how:'모델과 생각 단계는 대화를 시작할 때 정하고, 바꿀 일이 생기면 새 대화에서 바꿔 캐시를 이어 써요.'});
+        {criterion:2,title:`${s.name}: 모델은 대화 처음에 정하기`,why:`대화 중간에 모델을 바꿔 대화 전체를 새로 저장(캐시)한 게 ${s.switch.n}번이에요. 한도를 쓴 양은 ${fmt(s.switch.burden)}, ${s.name} 전체의 ${P(share(s.switch.burden))}예요.`,how:'모델과 생각 단계는 대화를 시작할 때 정하고, 바꿀 일이 생기면 새 대화에서 바꿔 캐시를 이어 써요.'},EVIDENCE.recorded);
   }
-  // compaction: Aside's one setting (all Aside sources together), Claude Code's own window
-  for(const [group,keys,where] of [['Aside',[...ASIDE_SETS],'Aside 설정에서 자동 압축 기준을'],['Claude Code',['claude_cli_local'],'CLAUDE_CODE_AUTO_COMPACT_WINDOW를']]){
+  // compaction: Aside's one setting (all Aside sources together), Claude Code's own window. Advice only when compactionSolid.
+  for(const [group,keys,where] of COMPACT_GROUPS){
     const src=keys.map(k=>[k,input.sources[k]]).filter(([,s])=>s&&s.compactCurve);if(!src.length)continue;
-    const p=pickCompaction(src.map(([,s])=>s.compactCurve));if(!p)continue;
+    const p=pickCompaction(src.map(([,s])=>s.compactCurve));if(!p||!compactionSolid(p))continue;
     const c0=src[0][1].compactCurve,u=c0.unit==='%'?'%':' 토큰',cur=c0.unit==='%'?c0.current:fmt(c0.current),pick=c0.unit==='%'?p.pick:fmt(p.pick),lower=p.lower;
     const rows=src.map(([k,s],i)=>({name:s.name,n:s.compact.n,rb:s.compact.burden,rs:pct1(s.compact.burden,s.total),n2:p.per[i].n,save:p.per[i].save,ss:p.per[i].saveShare}));
-    const facts={setting:group,current:c0.current,pick:p.pick,direction:lower?'lower':'higher'};
+    const facts={setting:group,current:c0.current,pick:p.pick,direction:lower?'lower':'higher',summaryOut:SUMMARY_OUT,rereadTest:REREAD_TEST};
     rows.forEach((r,i)=>Object.assign(facts,{['source'+(i+1)]:r.name,['compactions'+(i+1)]:r.n,['newCompactions'+(i+1)]:r.n2,['rewriteBurden'+(i+1)]:Math.round(r.rb),['rewriteShare'+(i+1)]:PN(r.rs),['save'+(i+1)]:Math.round(r.save),['saveShare'+(i+1)]:PN(r.ss)}));
     const f={criterion:3,title:`${group} 자동 압축 기준은 ${cur}${u}보다 ${pick}${u} 쪽이 한도를 덜 써요`,
-      why:`압축 뒤 대화를 새로 저장(캐시)하느라 한도를 쓴 양은 ${rows.map(r=>`${r.name} ${r.n}번 ${fmt(r.rb)}(전체의 ${P(r.rs)})`).join(', ')}로 작아요. 기록된 대화로 다시 계산하면 ${pick}${u}로 ${lower?'낮출':'올릴'} 때 압축은 ${rows.map(r=>`${r.name} ${r.n}→${r.n2}번`).join(', ')}으로 ${lower?'늘지만':'줄고'} ${lower?'요청마다 싣는 맥락이 작아져서':''} 한도를 ${rows.map(r=>`${r.name} ${fmt(r.save)}(전체의 ${P(r.ss)})`).join(', ')} 덜 써요. 요약 뒤 다시 찾아 읽는 양은 이 계산에 없어요.`.replace(/  +/g,' '),
+      why:`기록된 대화로 다시 계산하면 ${pick}${u}에서 압축은 ${rows.map(r=>`${r.name} ${r.n}→${r.n2}번`).join(', ')}으로 바뀌고 한도를 ${rows.map(r=>`${r.name} ${fmt(r.save)}(전체의 ${P(r.ss)})`).join(', ')} 덜 써요. 요약을 만드는 비용을 넣고, 요약 뒤 5만 토큰씩 다시 읽어도 같은 쪽이에요.`,
       how:`${where} ${pick}${u}로 ${lower?'낮춰요':'올려요'}.${lower?' 압축하면 앞 내용은 요약돼요.':''}`};
-    F.push({id:'compact-'+group,source:group,impact:Math.max(...rows.map(r=>r.save)),facts,shares:rows.flatMap(r=>[PN(r.rs),PN(r.ss)]),fixed:f});}
+    F.push({id:'compact-'+group,source:group,impact:Math.max(...rows.map(r=>r.save)),facts,shares:rows.map(r=>PN(r.ss)),fixed:f,evidence:EVIDENCE.estimate});}
   return F.sort((x,y)=>y.impact-x.impact);}
+const COMPACT_GROUPS=[['Aside',[...ASIDE_SETS],'Aside 설정에서 자동 압축 기준을'],['Claude Code',['claude_cli_local'],'CLAUDE_CODE_AUTO_COMPACT_WINDOW를']];
 
-// neutral lines (not advice): burden per source, cache hit rate, model shares, compaction cost when no item, unsupported sources
-function infoLines(input,findings){const out=[];
+// Reference (not advice): one table row per source (한도를 쓴 양, 캐시 적중, 모델별로 한도를 쓴 양) and short notes said once:
+// unknown output prices, assumed cache lifetime, the compaction "실험해 볼 거리", unsupported sources. BASIS is the one shared line.
+const share0=x=>x<1?'1% 미만':x+'%';
+function reference(input,findings){const table=[],notes=[];
   const list=Object.entries(input.sources).sort((a,b)=>b[1].total-a[1].total);
-  for(const [k,s] of list){const notes=[];if(s.ttlUnknown)notes.push('캐시가 몇 분 살아 있는지 기록에 없어 새로 저장(캐시)은 1.25배(5분 기준)로 셌어요'+(s.lifetime>=30?`. 기록상 ${s.lifetime}분 가까이 살아 있어 실제로는 2배(1시간 기준)일 수 있어요.`:'.'));if(s.outUnknown.length)notes.push(s.outUnknown.slice(0,4).join(', ')+'는 AI가 쓴 답을 몇 배로 칠지 공개 요금을 찾지 못해 4배로 셌어요.');
-    out.push({title:`${s.name}: 한도를 쓴 양 ${fmt(s.total)}, 캐시 적중 ${s.hitPct}%`,why:`모델별로 한도를 쓴 양 (${s.byModel.slice(0,4).map(m=>m.label+' '+(m.share<1?'1% 미만':m.share+'%')).join(', ')}). 다시 읽기(캐시)는 새 입력의 ${s.readRatio}배라 적중률이 높을수록 좋아요.${notes.length?' '+notes.join(' '):''}`});
-    if(s.compact.n>=3&&!findings.some(f=>f.id===(ASIDE_SETS.has(k)?'compact-Aside':'compact-Claude Code')))out.push({title:`${s.name}: 자동 압축 뒤 새로 저장(캐시) ${s.compact.n}번, 한도를 쓴 양 ${fmt(s.compact.burden)}(전체의 ${P(pct1(s.compact.burden,s.total))})`,why:s.compactCurve?'기록된 대화로 다시 계산하면 압축 기준을 바꿔도 한도를 쓰는 양이 거의 같아서 지금 기준을 그대로 둬도 돼요.':'압축 기준 설정을 읽지 못해 방향은 계산하지 않았어요.'});}
-  if(input.excluded.length)out.push({title:`${input.excluded.join(', ')}: 한도를 쓴 양은 지원 안 함`,why:'캐시 기록이 없어 셀 수 없어요. 해당 서비스 기록에 캐시 값이 생기면 보여요.'});
-  return out.slice(0,8);}
+  for(const [,s] of list)table.push({source:s.name,used:fmt(s.total),hit:s.hitPct+'%',models:s.byModel.slice(0,4).map(m=>m.label+' '+share0(m.share)).join(', ')});
+  const unknown=[...new Set(list.flatMap(([,s])=>s.outUnknown))];
+  if(unknown.length)notes.push(unknown.slice(0,6).join(', ')+'는 AI가 쓴 답의 공개 요금이 없어 4배로 셌어요.');
+  for(const [,s] of list){if(s.ttlAssumed==='1h')notes.push(`${s.name}${eun(s.name)} 캐시 수명이 기록에 없지만 10분 넘게 쉬어도 캐시가 남아 있어 새로 저장(캐시)을 1시간 기준 2배로 셌어요.`);
+    else if(s.ttlUnknown)notes.push(`${s.name}${eun(s.name)} 캐시 수명이 기록에 없어 새로 저장(캐시)을 5분 기준 1.25배로 셌어요.`);}
+  for(const [group,keys] of COMPACT_GROUPS){if(findings.some(f=>f.id==='compact-'+group))continue;
+    const src=keys.map(k=>input.sources[k]).filter(s=>s&&s.compactCurve);if(!src.length){const any=keys.map(k=>input.sources[k]).filter(s=>s&&s.compact.n>=3);if(any.length)notes.push(`${group} 자동 압축 기준 설정을 읽지 못해 다른 기준은 계산하지 않았어요.`);continue;}
+    const p=pickCompaction(src.map(s=>s.compactCurve));
+    if(!p){notes.push(`${group} 자동 압축은 기록 재계산으로 기준을 바꿔도 한도를 쓴 양이 거의 같아요.`);continue;}
+    const u=src[0].compactCurve.unit==='%'?'%':' 토큰',pick=u==='%'?p.pick:fmt(p.pick),sgn=v=>v>=0?`${P(v)} 덜`:`${P(-v)} 더`;
+    notes.push(`실험해 볼 거리: ${group} 자동 압축 기준이 ${pick}${u}였다면 기록 재계산으로 ${src.map((s,i)=>`${s.name} ${sgn(p.per[i].saveShare)}`).join(', ')} 썼어요. 요약을 만드는 비용은 넣었지만 요약 뒤 다시 찾아 읽는 양은 기록에 없어요. 요약마다 5만 토큰씩 다시 읽으면 ${src.map((s,i)=>`${s.name} ${sgn(p.per[i].saveRereadShare)}`).join(', ')} 써요.`);}
+  if(input.excluded.length)notes.push(`${input.excluded.join(', ')}${eun(input.excluded[input.excluded.length-1])} 캐시 기록이 없어 셀 수 없어요.`);
+  return {table,notes:notes.slice(0,6)};}
+// per-source cache lifetime evidence, kept in the result for checking (not shown as advice)
+function evidenceOf(input){const out={};for(const [,s] of Object.entries(input.sources))if(s.gapTable)out[s.name]={lifetime:s.lifetime,from:s.lifeFrom,confirmed:!!s.lifeConfirmed,gaps:s.gapTable.map(b=>({from:b.from,to:b.to,n:b.n,hitPct:b.hitPct})),coldRestarts:s.cold.n,missesInsideLifetime:s.coldInside?s.coldInside.n:0};return out;}
 
 // ---- 4. guardrails on model text ----
 const BANNED=[
@@ -188,8 +250,10 @@ function validate(items,findings){const byId=new Map(findings.map(f=>[f.id,f]));
         else if(/추정/.test(text))reason='the page says "요금 기준 추정" once, not in each item';
         else if((text.match(/1% 미만/g)||[]).length<([f.fixed.title,f.fixed.why,f.fixed.how].join(' ').match(/1% 미만/g)||[]).length)reason='a share under 1% must stay "1% 미만"';
         else if(f.fixed.criterion===1&&!/새 대화/.test(it.how))reason='cold restart advice must keep the new-conversation step';
+        else if(f.facts.source&&!it.title.includes(f.facts.source))reason='title must name the source';
+        else if(f.fixed.criterion===1&&!/최대/.test(it.title+it.why))reason='cold restart saving is an upper bound and must say 최대';
         else if(f.fixed.criterion===2&&!/처음/.test(it.how))reason='model switch advice must say to choose at the start';}}
-    if(reason)dropped.push({title:String(it&&it.title||'').slice(0,80),reason});else kept.push({id:f.id,criterion:[f.fixed.criterion],title:it.title.trim(),why:it.why.trim(),how:it.how.trim()});}
+    if(reason)dropped.push({title:String(it&&it.title||'').slice(0,80),reason});else kept.push({id:f.id,criterion:[f.fixed.criterion],evidence:f.evidence,title:it.title.trim(),why:it.why.trim(),how:it.how.trim()});}
   return {kept:kept.slice(0,5),dropped};}
 
 // ---- 5. the model call ----
@@ -207,6 +271,8 @@ function prompt(findings){return `아래는 한 사람의 AI 토큰 사용 기�
 - 비용이나 돈은 말하지 말아요. 서로 다른 출처(source)의 숫자를 더하지 말아요.
 - 쉬었다 돌아온 뒤 압축하라고 하지 말아요(그때가 가장 비싸요).
 - "요금 기준 추정"은 화면 아래에 이미 한 번 적혀 있어요. 항목에는 "추정"이라는 말을 쓰지 말아요(규칙 8).
+- 제목에는 출처 이름(facts.source)을 꼭 넣어요.
+- 쉬었다 이어 쓴 항목의 비율은 다 피할 수 없는 최대치라 "최대"를 꼭 남겨요.
 - draft의 "1% 미만"은 그대로 써요. 캐시 만료 항목의 how에는 "새 대화"를, 모델 전환 항목의 how에는 "처음"을 꼭 남겨요.
 화면 글쓰기 규칙(매번 따라요):
 ${writingRules()}
@@ -237,14 +303,14 @@ async function askModel(findings,{workDir,home=os.homedir(),timeoutMs=150000}={}
 
 // ---- 6. whole check: model text where it passes, fixed text for anything it dropped or missed; order = 부담 ----
 async function habitCheck({snap,names,indexPath,workDir,home,useModel=true,now=Date.now(),ask=askModel}){
-  const input=buildInput({snap,names,indexPath,home,now}),findings=rules(input),info=infoLines(input,findings);
-  const base={at:new Date(now).toISOString(),basis:BASIS,info,rules:'cache-v1'};
+  const input=buildInput({snap,names,indexPath,home,now}),findings=rules(input),ref=reference(input,findings);
+  const base={at:new Date(now).toISOString(),basis:BASIS,table:ref.table,notes:ref.notes,evidence:evidenceOf(input),weights:Object.fromEntries(Object.entries(input.sources).map(([k,s])=>[k,{write:s.writeRatio,life:s.lifetime}])),rules:'cache-v2'};
   if(!findings.length)return {...base,model:null,items:[],dropped:[],findings:0};
   const ans=useModel?await ask(findings,{workDir,home}):{model:null,items:[]};
   const {kept,dropped}=validate(ans.items,findings);
   const seen=new Set(),items=[];for(const k of kept)if(!seen.has(k.id)){seen.add(k.id);items.push({...k,by:'model'});}
-  for(const f of findings)if(!seen.has(f.id)){seen.add(f.id);items.push({id:f.id,...f.fixed,criterion:[f.fixed.criterion],by:'rule'});}
+  for(const f of findings)if(!seen.has(f.id)){seen.add(f.id);items.push({id:f.id,...f.fixed,criterion:[f.fixed.criterion],evidence:f.evidence,by:'rule'});}
   const rank=new Map(findings.map((f,i)=>[f.id,i]));items.sort((a,b)=>rank.get(a.id)-rank.get(b.id));
   return {...base,model:items.some(i=>i.by==='model')?ans.model:null,items:items.slice(0,5),dropped,findings:findings.length};}
 
-module.exports={writingRules,buildInput,analyze,replay,compactionCurve,pickCompaction,rules,infoLines,validate,habitCheck,prompt,BANNED,PRICES,PRICE_NOTE,BASIS,numbersOf,priceFor};
+module.exports={writingRules,buildInput,analyze,replay,compactionCurve,pickCompaction,rules,reference,evidenceOf,gapTable,lifetimeOf,compactionSolid,GAP_BUCKETS,SUMMARY_OUT,REREAD_TEST,validate,habitCheck,prompt,BANNED,PRICES,PRICE_NOTE,BASIS,numbersOf,priceFor};
