@@ -98,7 +98,7 @@ enum Design {
         return "\(c.month!)/\(c.day!)" + (hm == "00:00" ? "" : " " + hm)
     }
 
-    // "방금 확인 · 계정 2개": accounts = distinct signed-in accounts behind Codex/Claude/Grok (0 = left out)
+    // "방금 확인, 계정 2개": accounts = distinct signed-in accounts behind Codex/Claude/Grok (0 = left out)
     static func header(lastCheck: Date?, main: [Quota], now: Date = Date()) -> String {
         var parts: [String] = []
         if let t = lastCheck {
@@ -108,7 +108,7 @@ enum Design {
         var ids = Set<String>()
         for q in main.prefix(3) where !q.noLogin { if let k = q.accountKey ?? q.credKey { ids.insert(k) } }
         if !ids.isEmpty { parts.append("계정 \(ids.count)개") }
-        return parts.joined(separator: " · ")
+        return parts.joined(separator: ", ")
     }
 
     // ---- "지금 할 일": the dashboard's first item (client.cjs liveLong + convName + compact) ----

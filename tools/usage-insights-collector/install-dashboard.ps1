@@ -27,7 +27,7 @@ if ($ver -lt [version]'22.13.0') { throw "Node.js $ver is too old (needs 22.13 o
 
 # code: same relative layout as the repository, so the modules find each other
 $files = @(
-    'NOTICE', 'assets\service-logos.json',
+    'NOTICE', 'WRITING.md', 'assets\service-logos.json',
     'tools\service-logos.cjs',
     'tools\usage-insights-collector\collect.cjs', 'tools\usage-insights-collector\indexed.cjs',
     'tools\usage-insights-collector\assemble.cjs', 'tools\usage-insights-collector\refresh-dashboard.cjs', 'tools\usage-insights-collector\habit-check.cjs',

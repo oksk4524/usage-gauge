@@ -4,8 +4,8 @@ import Foundation
 enum Antigravity {
     static let cliTimeout: TimeInterval = 30
     static let maxOut = 256 * 1024
-    // two items like Windows: the Gemini 4 Argon pool, and the rest of Antigravity (Gemini general + Claude·GPT)
-    static let geminiName = "Gemini 4 Argon", otherName = "Antigravity(Gemini·Claude·GPT)"
+    // two items like Windows: the Gemini 4 Argon pool, and the rest of Antigravity (Gemini general + Claude, GPT)
+    static let geminiName = "Gemini 4 Argon", otherName = "Antigravity(Gemini, Claude, GPT)"
 
     static func findAgy() -> String? {
         let home = Usage.home

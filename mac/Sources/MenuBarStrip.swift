@@ -4,7 +4,7 @@ import Foundation
 // Menu bar variant C, revised 2026-10-30: for every service with a value, a filled monochrome logo, a small
 // vertical remaining bar and the number left (no % sign). Fixed order Codex, Claude, Grok, then the Antigravity
 // group as two items like Windows: Gemini 4 Argon (Gemini star) and the rest of Antigravity (Gemini general and
-// Claude·GPT pools, Antigravity logo). Services without a value are hidden. A used-up service is not dimmed: its
+// Claude and GPT pools, Antigravity logo). Services without a value are hidden. A used-up service is not dimmed: its
 // bar is an empty outline and, instead of "0", it shows when it fills again ("월", or "14시" within 24 hours).
 // Drawn as one template image of vector glyphs, so macOS tints it for light and dark menu bars by itself.
 
@@ -100,13 +100,13 @@ enum MenuBarStrip {
     }
 
     // one line per item, in the menu bar order:
-    // "Codex 주간 37% 남음" / "Claude 주간 다 씀 · 월 12:00에 다시 차요"
+    // "Codex 주간 37% 남음" / "Claude 주간 다 씀, 월 12:00에 다시 차요"
     static func tooltip(_ es: [Entry], now: Date = Date(), tz: TimeZone = .current) -> String {
         es.map { e in
             var s = e.name + " " + e.window + " "
             if e.remaining <= 0 {
                 s += "다 씀"
-                if let r = e.reset { s += r > now ? " · " + refillTime(r, now: now, tz: tz) + "에 다시 차요" : " · 곧 다시 차요" }
+                if let r = e.reset { s += r > now ? ", " + refillTime(r, now: now, tz: tz) + "에 다시 차요" : ", 곧 다시 차요" }
             } else { s += Usage.remainingNumber(e.remaining) + "% 남음" }
             return e.stale ? s + " (오래된 값)" : s
         }.joined(separator: "\n")

@@ -53,7 +53,7 @@ const F=h.rules(input);
  assert.ok(ids.includes('cold-claude_aside_local'),'cold restarts flagged');assert.ok(ids.includes('compact-Aside'),'compaction direction from the replay');
  assert.ok(!ids.some(i=>/helper|shortopus|reread|live|long|claudemd/.test(i)),'no old re-read, helper, long-conversation or CLAUDE.md items');
  for(const f of F){const t=f.fixed.title+f.fixed.why+f.fixed.how;assert.ok(!/(Sonnet|Haiku|Opus)/.test(t),'no model advice: '+f.id);assert.ok(!/다시 읽기 줄|나누/.test(t),'no re-read cutting: '+f.id);
-   assert.ok(f.shares.some(s=>t.includes(s+'%')),'share of total shown: '+f.id);assert.ok(/부담/.test(t),'부담 shown: '+f.id);}
+   assert.ok(f.shares.some(s=>t.includes(s+'%')),'share of total shown: '+f.id);assert.ok(/한도를/.test(t)&&!/부담|비중|가중/.test(t),'한도를 쓴 양 shown, old words gone: '+f.id);}
  for(let i=1;i<F.length;i++)assert.ok(F[i-1].impact>=F[i].impact,'ranked by 부담');
  const c=F.find(f=>f.id==='compact-Aside');assert.ok(c.facts.pick>=50,'replay candidates stop at half the window');assert.equal(c.facts.direction,c.facts.pick<85?'lower':'higher');
  const cold=F.find(f=>f.id==='cold-claude_aside_local');assert.ok(/캐시가 살아 있을 때/.test(cold.fixed.title)&&/새 대화/.test(cold.fixed.how));
@@ -61,7 +61,7 @@ const F=h.rules(input);
 {// a high re-read multiple alone is not waste: one long healthy conversation, cache always alive
  const healthy=inputOf({claude_aside_local:conv({session:'ok',n:300,step:1500})});assert.deepEqual(h.rules(healthy),[],'well-used cache: no items');
  const info=h.infoLines(healthy,[]);assert.ok(/캐시 적중 \d+%/.test(info[0].title)&&/적중률이 높을수록 좋아요/.test(info[0].why),'hit rate shown positively');
- assert.ok(/모델별 한도 부담 비중/.test(info[0].why),'model mix is a neutral line');assert.ok(info.some(i=>/지원 안 함/.test(i.title)),'unsupported sources named');
+ assert.ok(/모델별로 한도를 쓴 양 \(/.test(info[0].why)&&!/부담|비중/.test(info[0].title+info[0].why),'model mix is a neutral line in plain words');assert.ok(info.some(i=>/지원 안 함/.test(i.title)),'unsupported sources named');
  assert.ok(/1\.25배\(5분 기준\)/.test(info[0].why),'unknown lifetime: 1.25 and said so');
  // small cold-restart cost is not flagged
  const few=inputOf({claude_aside_local:[...conv({session:'big',n:2000,step:300}),...conv({session:'one',n:60,cold:[30]})]});assert.ok(!h.rules(few).some(f=>f.id.startsWith('cold')),'below 3% of the total: no item');
@@ -85,15 +85,20 @@ const F=h.rules(input);
   [{...good,how:'하위 작업은 Sonnet으로 맡겨요.'},1],                              // model advice
   [{...good,how:'캐시 읽기를 아껴요.'},1],                                         // cache use is good
   [{...good,how:'쉬었다 돌아오면 /compact로 줄이고 이어가요.'},1],                   // contradicts guidance
-  [{...good,how:'월 10달러 아껴요.'},1],                                            // money
+  [{...good,how:'월 10달러 아껴요.'},1],
+  [{...good,how:good.how+' 한도 부담 비중이 커요.'},1],                          // old wording
+  [{...good,how:good.how.replace('. ',', 그리고 ')+' 캐시 · 토큰'},1],                // middle dot                                            // money
   [{...good,why:'readRatio 0.1이에요. '+good.why},1],                               // field name
   [{...good,why:'캐시가 만료돼 다시 저장했어요.'},1],                                 // share of total missing
-  [{...good,id:'reread-x'},1],                                                      // not a finding
+  [{...good,id:'reread-x'},1],
+  [{...good,why:'요금 기준 추정으로 보면 '+good.why},1],                                   // estimate said once on the page
+  [{...good,how:'60분 안에 이어 쓰면 좋아요. 쉬기 전에 메모해 두세요.'},1],                // drops the new-conversation step                                                      // not a finding
   [{title:'x'},1]];
  for(const [it,drop] of cases)assert.equal(h.validate([it],F).dropped.length,drop,JSON.stringify(it).slice(0,90));
  const c=F.find(x=>x.id==='compact-Aside');const wrong=c.facts.direction==='lower'?'올려요':'낮춰요';assert.equal(h.validate([{id:c.id,title:c.fixed.title,why:c.fixed.why,how:'기준을 '+c.facts.pick+'%로 '+wrong+'.'}],F).dropped.length,1,'direction must follow the replay');
  const p=h.prompt(F);for(const s of ['캐시 다시 읽기는 좋은 거예요','대화를 나누라고 하지 말아요','모델 이름','direction',h.PRICE_NOTE])assert.ok(p.includes(s),'prompt states: '+s);
  assert.ok(!/하위 작업|다시 읽기 줄이기/.test(p),'prompt carries no old framing');
+ assert.ok(p.includes(h.writingRules())&&/가운데 점/.test(h.writingRules())&&/해요체/.test(h.writingRules()),'prompt carries WRITING.md every time');
  ok('guardrails: invented numbers, re-read cutting, model advice, money, field names, share, direction; prompt principles');}
 
 // 5. the whole check on a temporary index
@@ -107,8 +112,9 @@ const F=h.rules(input);
   const home=path.join(dir,'home');fs.mkdirSync(path.join(home,'.aside','u','0'),{recursive:true});fs.writeFileSync(path.join(home,'.aside','u','0','settings.json'),JSON.stringify({compaction:{enabled:true,thresholdPercent:85}}));
   const snap={datasets:[],period:{to:'2026-10-29'}};
   const r=await h.habitCheck({snap,names:{},indexPath:idx,home,useModel:false,now});
-  assert.ok(r.items.length>=2&&r.items.every(i=>i.by==='rule'),'rule texts without a model');assert.ok(r.info.length>=2&&r.basis.includes('비공개라 추정'));
-  assert.ok(r.info.some(i=>/Antigravity: 한도 부담 계산 지원 안 함/.test(i.title)),'Antigravity excluded with 지원 안 함');
+  assert.ok(r.items.length>=2&&r.items.every(i=>i.by==='rule'),'rule texts without a model');assert.ok(r.info.length>=2&&r.basis.includes('요금 기준 추정')&&!/부담|비중|가중|[\u00b7\u2022\u2219]/.test(r.basis+JSON.stringify(r.info)+JSON.stringify(r.items)));
+  assert.ok(/공개 API 요금 비율 기준, 구독 한도 실제 차감 방식은 비공개라 추정/.test(fs.readFileSync(path.join(__dirname,'habit-check.cjs'),'utf8')),'source note kept in code');
+  assert.ok(r.info.some(i=>/Antigravity: 한도를 쓴 양은 지원 안 함/.test(i.title)),'Antigravity excluded with 지원 안 함');
   // a model that tries the old framing is overruled; a good rewording is kept
   const ask=async F=>({model:'Claude Haiku',items:[{id:F[0].id,title:'다시 읽기 줄이기',why:'87배예요.',how:'대화를 나눠요.'},{id:F[1].id,title:F[1].fixed.title+'!',why:F[1].fixed.why,how:F[1].fixed.how}]});
   const r2=await h.habitCheck({snap,names:{},indexPath:idx,home,now,ask});

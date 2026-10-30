@@ -95,7 +95,7 @@ module.exports = async function({assert, fs, vm, core, build, sampleBase}) {
   E.clk({provider:'claude'});E.clk({view:'overview'});v=E.view();
   assert.ok(v.includes('quota-value num warning')&&!v.includes('5% 이하')&&v.includes('class="track warning"'));
   assert.ok(!v.includes('잔여 한도가 적어요')&&!v.includes('실시간 상태나 예측은 아니에요')&&!v.includes('확인:'),'v5: caption prose and exact times are not on the first screen');
-  E.clk({usage:'1'});{const db=E.nn('#dialog-body').innerHTML;assert.ok(db.includes('실시간 상태나 예측이 아니고')&&db.includes('5% 이하로 남으면 강조해서 보여 줘요')&&/확인: [^<]*경과/.test(db)&&db.includes('초기화: ')&&db.includes('남은 한도'),'v5: exact checked/reset in details');}E.clk({},'dialog-close');
+  E.clk({usage:'1'});{const db=E.nn('#dialog-body').innerHTML;assert.ok(db.includes('실시간 상태나 예측이 아니고')&&db.includes('5% 이하로 남으면 강조해서 보여 줘요')&&/확인: [^<]*경과/.test(db)&&/에 다시 차요|다시 차는 시각을 아직 몰라요/.test(db)&&db.includes('남은 한도'),'v5: exact checked/reset in details');}E.clk({},'dialog-close');
   assert.equal((v.match(/class="quota-row"/g)||[]).length,2);
   assert.ok(v.includes('남은 한도')&&/저장된 값 \/ [^<]*경과/.test(v));
   assert.ok(!v.includes('누락 날짜')&&!v.includes('계정 한도와 크레딧'));
