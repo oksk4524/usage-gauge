@@ -174,9 +174,16 @@ do {
     check(es.map { MenuBarStrip.numberText($0, now: nowM, tz: tzS) } == ["37", "월"], "menu bar C: numbers without a % sign, used-up shows the refill weekday")
     check(MenuBarStrip.tooltip(es, now: nowM, tz: tzS) == "Codex 주간 37% 남음\nClaude 주간 다 씀, 월 11:55에 다시 차요", "menu bar C: tooltip, one line per item")
     let c5 = Usage.ok(80); c5.windows = [UsageWindow(key: "seven_day", used: 20, reset: nil), UsageWindow(key: "five_hour", used: 90, reset: nil), UsageWindow(key: "seven_day_opus", used: 99, reset: nil)]
-    let b5 = MenuBarStrip.binding(c5)
-    check(b5.window == "5시간" && abs(b5.remaining - 10) < 0.001, "menu bar C: the binding window (5-hour) is shown, model-only pools ignored")
-    check(MenuBarStrip.binding(c1).window == "주간" && MenuBarStrip.binding(c1).remaining == 60, "menu bar C: codex weekly binds when it is lower than the 5-hour window")
+    // weekly choice (2026-10-30): the number is always the weekly limit, even when the 5-hour window is lower
+    let w5 = MenuBarStrip.weekly(c5)
+    check(w5.label == "주간" && w5.remaining == 80, "weekly: Claude shows the weekly limit although the 5-hour window is lower")
+    check(MenuBarStrip.others(c5) == [MenuBarStrip.Window(label: "5시간", remaining: 10, reset: nil)], "weekly: the 5-hour window is the other window, model-only pools ignored")
+    check(MenuBarStrip.weekly(c1).remaining == 60 && MenuBarStrip.others(c1).map(\.label) == ["5시간"] && abs(MenuBarStrip.others(c1)[0].remaining - 87.5) < 0.001,
+          "weekly: Codex with both windows shows the 604800 s one, the 18000 s one is the other window")
+    check(MenuBarStrip.blocked(c5) == nil, "weekly: 10% left in the 5-hour window is not a block")
+    let ce = MenuBarStrip.entries(main: [c1, c5], ag: [])
+    check(ce.map { $0.window } == ["주간", "주간"] && ce.map { MenuBarStrip.numberText($0) } == ["60", "80"] && ce.allSatisfy { $0.blocked == nil },
+          "weekly: menu bar numbers are the weekly limits")
     check(MenuBarStrip.until(nowM.addingTimeInterval(200 * 60), now: nowM) == "3시간 20분 뒤" && MenuBarStrip.until(nowM.addingTimeInterval(900), now: nowM) == "15분 뒤", "menu bar C: reset countdown")
     check(MenuBarStrip.entries(main: [named(Quota.noLoginFound(), "Codex")], ag: []).isEmpty, "menu bar C: nothing read, nothing shown (falls back to the empty ring)")
 
@@ -192,8 +199,20 @@ do {
     check(agQ[1].ok && agQ[1].remaining == 100 && agQ[1].windows.count == 4 && agQ[1].resetsAt == ISO8601DateFormatter().date(from: "2026-11-06T11:58:12Z"), "argon split: the rest is Gemini general + Claude, GPT (weekly and 5-hour)")
     check(Antigravity.isArgon("gemini-argon-wtu-weekly") && Antigravity.isArgon("gemini-pro-weekly") && !Antigravity.isArgon("gemini-weekly") && !Antigravity.isArgon("gemini-5h") && !Antigravity.isArgon("3p-weekly"), "argon split: which buckets are Argon (same rule as Windows plus the argon name)")
     var agB2 = agB; agB2["3p-5h"] = ["window": "5h", "remaining_fraction": 0, "reset_time": "2026-10-30T16:58:12Z"]
-    let rest0 = Antigravity.split(agB2)[1], rb = MenuBarStrip.binding(rest0)
-    check(rest0.remaining == 100 && rb.window == "5시간" && rb.remaining == 0, "argon split: the binding bucket of the rest (Claude, GPT 5-hour used up) is shown")
+    let rest0 = Antigravity.split(agB2)[1]
+    check(rest0.remaining == 100 && MenuBarStrip.weekly(rest0).remaining == 100, "argon split: the rest keeps its weekly value when a 5-hour bucket is used up")
+    check(MenuBarStrip.blocked(rest0) == MenuBarStrip.Window(label: "5시간", remaining: 0, reset: ISO8601DateFormatter().date(from: "2026-10-30T16:58:12Z")),
+          "argon split: a used-up 5-hour bucket of the rest marks the item as blocked")
+    // 5-hour buckets never count toward the weekly value, in either group (even a lower one, even an argon 5-hour bucket)
+    var agB4 = agB; agB4["gemini-5h"] = ["window": "5h", "remaining_fraction": 0.05, "reset_time": "2026-10-30T16:58:12Z"]
+    agB4["gemini-argon-5h"] = ["window": "5h", "remaining_fraction": 0.01, "reset_time": "2026-10-30T16:58:12Z"]
+    let ag4 = Antigravity.split(agB4)
+    check(Antigravity.isArgon("gemini-argon-5h") && abs(ag4[0].remaining - 16.8876) < 0.001 && ag4[1].remaining == 100,
+          "antigravity: weekly values leave out 5-hour buckets (Argon 17, the rest 100)")
+    check(ag4[0].windows.filter { $0.key == "five_hour" }.count == 1 && ag4[1].windows.filter { $0.key == "five_hour" }.count == 2,
+          "antigravity: 5-hour buckets stay as other windows of their group")
+    check(abs(MenuBarStrip.others(ag4[1])[0].remaining - 5) < 0.001 && MenuBarStrip.blocked(ag4[1]) == nil && MenuBarStrip.blocked(ag4[0])?.label == "5시간",
+          "antigravity: the lowest 5-hour bucket is the other window; below 2% blocks")
     var agB3 = agB; agB3.removeValue(forKey: "gemini-argon-wtu-weekly")
     check(!Antigravity.split(agB3)[0].ok && Antigravity.split(agB3)[1].ok, "argon split: no Argon bucket, only the Antigravity item")
     let grUsed = named(Usage.ok(0), "Grok"); grUsed.resetsAt = nowM.addingTimeInterval(3 * 3600); grUsed.lastOk = Date()
@@ -250,6 +269,60 @@ do {
         let cbx = 15 + 3 + 2 + 3 + Int(ceil(("37" as NSString).size(withAttributes: [.font: MenuBarStrip.font]).width)) + 10 + 16 + 3
         check(a(cbx, 11) > 0.2 && a(cbx, 11) < 0.4 && a(cbx, 16) < 0.4, "menu bar image: a used-up service shows only the faint track")
     }
+}
+
+// ---- weekly ring + 5-hour line, and the 5-hour-exhausted marker in the menu bar ----
+do {
+    let tz = TimeZone(identifier: "Asia/Seoul")!
+    var cal = Calendar(identifier: .gregorian); cal.timeZone = tz
+    let now = cal.date(from: DateComponents(year: 2026, month: 10, day: 30, hour: 22, minute: 40))!
+    let r5 = cal.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 1, minute: 19))!
+    let rw = cal.date(from: DateComponents(year: 2026, month: 11, day: 5, hour: 9, minute: 0))!
+    func claude(_ week: Double, _ five: Double) -> Quota {
+        let q = Usage.ok(week); q.name = "Claude"; q.resetsAt = rw; q.lastOk = Date()
+        q.windows = [UsageWindow(key: "seven_day", used: 100 - week, reset: rw), UsageWindow(key: "five_hour", used: 100 - five, reset: r5),
+                     UsageWindow(key: "seven_day_opus", used: 100, reset: rw)]
+        return q
+    }
+    // popover: the ring is weekly; a small line shows the 5-hour window
+    let g55 = Design.gauge(claude(99, 55), logo: "claude", now: now, tz: tz)
+    check(g55.percentText == "99" && abs(g55.fraction - 0.99) < 1e-9 && g55.second == "5시간 55%" && g55.secondReset == nil && !g55.secondUsedUp,
+          "ring: weekly 99, second line '5시간 55%' without a reset time")
+    let g12 = Design.gauge(claude(70, 12), logo: "claude", now: now, tz: tz)
+    check(g12.second == "5시간 12%" && g12.secondReset == "01:19에 다시 차요" && !g12.secondUsedUp, "ring: a low 5-hour window adds when it fills again")
+    let g0 = Design.gauge(claude(99, 0), logo: "claude", now: now, tz: tz)
+    check(g0.percentText == "99" && g0.tone == .green && g0.second == "5시간 다 씀" && g0.secondReset == "01:19에 다시 차요" && g0.secondUsedUp,
+          "ring: 5-hour used up keeps the weekly ring, the line says 다 씀 and the refill time")
+    check(g0.detail == "주간 99% 남음\n5시간 다 씀, 01:19에 다시 차요", "ring: tooltip has the weekly and the 5-hour line")
+    let grokOnly = Usage.ok(40); grokOnly.windows = [UsageWindow(key: "weekly", used: 60, reset: nil)]
+    check(Design.gauge(grokOnly, logo: "grok", now: now, tz: tz).second == nil, "ring: no other window, no second line")
+    check(Design.gauge(claude(0, 100), logo: "claude", now: now, tz: tz).second == nil, "ring: weekly used up keeps the old look, no 5-hour line")
+    // menu bar: 5-hour used up while weekly has room -> weekly number, empty bar, refill hour, tooltip line
+    let blockedQ = claude(99, 1.5)
+    let none = Quota.noLoginFound()   // Codex not signed in: Claude is the only item
+    let es = MenuBarStrip.entries(main: [none, blockedQ], ag: [])
+    check(es.count == 1 && es[0].logo == "claude" && es[0].window == "주간" && es[0].remaining == 99 && es[0].blocked?.label == "5시간" && es[0].blocked?.reset == r5,
+          "marker: below 2% in the 5-hour window blocks, the item stays with its weekly value")
+    check(MenuBarStrip.numberText(es[0], now: now, tz: tz) == "99" && MenuBarStrip.blockedText(es[0], now: now, tz: tz) == "1시"
+          && MenuBarStrip.barRemaining(es[0]) == 0, "marker: weekly number, empty bar, refill hour like a used-up item")
+    check(MenuBarStrip.tooltip(es, now: now, tz: tz) == "Claude 주간 99% 남음\n5시간 다 씀, 01:19에 다시 차요", "marker: tooltip")
+    let open = MenuBarStrip.entries(main: [none, claude(99, 2)], ag: [])[0]
+    check(open.blocked == nil && MenuBarStrip.blockedText(open, now: now, tz: tz) == nil && MenuBarStrip.barRemaining(open) == 99, "marker: 2% left is not blocked")
+    // empty weekly keeps the weekday label and is never marked as 5-hour blocked
+    let emptyWeek = MenuBarStrip.entries(main: [none, claude(0, 0)], ag: [])[0]
+    check(emptyWeek.blocked == nil && MenuBarStrip.numberText(emptyWeek, now: now, tz: tz) == "목", "marker: weekly used up keeps the weekday label")
+    // drawn: the blocked item is wider by the refill hour, and its bar has no fill
+    let imgB = MenuBarStrip.image(es, now: now), imgO = MenuBarStrip.image([open], now: now)
+    let hourW = ceil(("1시" as NSString).size(withAttributes: [.font: MenuBarStrip.labelFont]).width)
+    check(abs(imgB.size.width - imgO.size.width - (MenuBarStrip.gap + hourW)) < 0.5, "marker: the refill hour follows the weekly number")
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(imgB.size.width), pixelsHigh: 22, bitsPerSample: 8, samplesPerPixel: 4,
+                               hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+    rep.size = imgB.size
+    NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    imgB.draw(in: NSRect(origin: .zero, size: imgB.size)); NSGraphicsContext.restoreGraphicsState()
+    let bx = MenuBarGlyphs.claude.advance + 3
+    let bottom = Double(rep.colorAt(x: bx, y: 16)?.alphaComponent ?? 0)
+    check(bottom > 0.2 && bottom < 0.4, "marker: the bar is only the faint track")
 }
 
 // ---- refresh scheduling (Refresh.swift): debounce, minimum gaps, idle polling, backoff ----
