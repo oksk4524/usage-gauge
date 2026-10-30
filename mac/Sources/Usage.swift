@@ -93,7 +93,7 @@ enum Usage {
         }
         guard let q = weekly else { return .fail("주간 한도를 찾지 못했어요") }
         if !q.ok { return q }
-        if !extra.isEmpty { q.extra = extra.joined(separator: " · ") }
+        if !extra.isEmpty { q.extra = extra.joined(separator: ", ") }
         q.windows = wins
         return q
     }
@@ -217,7 +217,7 @@ enum Usage {
             let label = k == "five_hour" ? "5시간 사용" : k == "seven_day_opus" ? "주간 Opus 사용" : "주간 Sonnet 사용"
             extra.append(label + " " + percentText(u) + "%")
         }
-        if !extra.isEmpty { q.extra = extra.joined(separator: " · ") }
+        if !extra.isEmpty { q.extra = extra.joined(separator: ", ") }
         return q
     }
 
@@ -384,14 +384,27 @@ enum Usage {
     }
 }
 
-// Read-only access to Claude Code's keychain item. The first read of the secret can show a macOS
-// "allow access" prompt that only the user can answer. Existence is checked first with attributes only,
-// which never prompts, so a Mac without a Claude login never sees a prompt.
+// Read-only access to Claude Code's keychain item. Read through /usr/bin/security first: Claude Code reads its own item
+// that way, so the tool is already on the item's access list and the read never shows a macOS "allow access" prompt,
+// even after this app is rebuilt. The secret is kept in memory only and never logged. Only when the tool fails
+// (missing, timeout, unexpected exit) does it fall back to the Security API, whose first read can prompt; existence is
+// checked first with attributes only, which never prompts, so a Mac without a Claude login never sees a prompt.
 enum ClaudeKeychain {
     enum Result { case found(Data), notFound, denied, skipped, error(OSStatus) }
     static let service = "Claude Code-credentials"
+    static var usedFallback = false   // tests and the log line: whether the last read needed the Security API
 
-    static func exists() -> Bool {
+    static func read() -> Result {
+        switch SecurityTool.findGenericPassword(service: service) {
+        case .found(let d): usedFallback = false; return .found(d)
+        case .notFound: usedFallback = false; return .notFound
+        case .failed(let why):
+            usedFallback = true
+            Log.write("claude keychain: security tool \(why), using the Security API")
+            return readWithAPI()
+        }
+    }
+static func exists() -> Bool {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                 kSecAttrService as String: service,
                                 kSecMatchLimit as String: kSecMatchLimitOne,
@@ -399,7 +412,7 @@ enum ClaudeKeychain {
         var out: CFTypeRef?
         return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess
     }
-    static func read() -> Result {
+    static func readWithAPI() -> Result {
         if !exists() { return .notFound }
         if Usage.keychainDenied { return .skipped }
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
@@ -412,5 +425,72 @@ enum ClaudeKeychain {
         if s == errSecItemNotFound { return .notFound }
         if s == errSecUserCanceled || s == errSecAuthFailed || s == errSecInteractionNotAllowed { return .denied }
         return .error(s)
+    }
+}
+
+// Runs /usr/bin/security find-generic-password -s <service> -w. stdout is read into memory only (never logged or
+// written anywhere); stderr is discarded. Exit 44 means no such item. Stops the tool after the timeout (10 s).
+enum SecurityTool {
+    enum Outcome { case found(Data), notFound, failed(String) }
+    static let path = "/usr/bin/security"
+
+    static func findGenericPassword(service: String, account: String? = nil, timeout: TimeInterval = 10) -> Outcome {
+        var args = ["find-generic-password", "-s", service]
+        if let a = account { args += ["-a", a] }
+        args.append("-w")
+        let r = run(path, args, timeout: timeout)
+        switch r.status {
+        case .timedOut: return .failed("timeout")
+        case .launchFailed: return .failed("not started")
+        case .exited(0):
+            guard let d = decode(r.stdout) else { return .failed("empty output") }
+            return .found(d)
+        case .exited(44): return .notFound
+        case .exited(let c): return .failed("exit \(c)")
+        }
+    }
+
+    enum Status: Equatable { case exited(Int32), timedOut, launchFailed }
+    static func run(_ exe: String, _ args: [String], timeout: TimeInterval) -> (status: Status, stdout: Data) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: exe)
+        p.arguments = args
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        p.standardInput = FileHandle.nullDevice
+        let done = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in done.signal() }
+        do { try p.run() } catch { return (.launchFailed, Data()) }
+        // read while the tool runs, so a full pipe never blocks it
+        var data = Data()
+        let reader = DispatchGroup()
+        reader.enter()
+        DispatchQueue.global(qos: .utility).async { data = out.fileHandleForReading.readDataToEndOfFile(); reader.leave() }
+        if done.wait(timeout: .now() + timeout) == .timedOut {
+            p.terminate()
+            _ = done.wait(timeout: .now() + 1)
+            return (.timedOut, Data())
+        }
+        _ = reader.wait(timeout: .now() + 2)
+        return (.exited(p.terminationStatus), data)
+    }
+
+    // -w prints the secret and a newline; secrets that are not printable text come out as hex
+    static func decode(_ raw: Data) -> Data? {
+        var d = raw
+        while let last = d.last, last == 0x0A || last == 0x0D { d.removeLast() }
+        if d.isEmpty { return nil }
+        if (try? JSONSerialization.jsonObject(with: d)) == nil, d.count % 2 == 0,
+           d.allSatisfy({ (0x30...0x39).contains($0) || (0x61...0x66).contains($0) || (0x41...0x46).contains($0) }) {
+            var bytes = [UInt8](); bytes.reserveCapacity(d.count / 2)
+            var i = d.startIndex
+            while i < d.endIndex {
+                guard let b = UInt8(String(decoding: d[i..<d.index(i, offsetBy: 2)], as: UTF8.self), radix: 16) else { return d }
+                bytes.append(b); i = d.index(i, offsetBy: 2)
+            }
+            return Data(bytes)
+        }
+        return d
     }
 }
