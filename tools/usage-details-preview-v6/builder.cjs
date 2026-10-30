@@ -21,7 +21,8 @@ function build(base, input) {
   { const a = S.localAside; S.localAside = a && typeof a === 'object' && Number.isFinite(a.thresholdPercent) && a.thresholdPercent > 0 && a.thresholdPercent <= 100 ? { enabled: a.enabled !== false, thresholdPercent: Math.round(a.thresholdPercent) } : null; }
   { const h = S.localHabit, str = (v, n) => typeof v === 'string' ? v.replace(/[\u0000-\u001f]/g, ' ').slice(0, n) : '';
     S.localHabit = h && typeof h === 'object' && Array.isArray(h.items) ? { at: str(h.at, 40), model: ['Claude Haiku', 'GPT-6 Luna'].includes(h.model) ? h.model : null, dropped: Array.isArray(h.dropped) ? h.dropped.length : 0,
-      items: h.items.slice(0, 5).map(i => ({ title: str(i && i.title, 160), why: str(i && i.why, 400), how: str(i && i.how, 300), by: i && i.by === 'model' ? 'model' : 'rule' })).filter(i => i.title) } : null; }
+      items: h.items.slice(0, 5).map(i => ({ title: str(i && i.title, 160), why: str(i && i.why, 600), how: str(i && i.how, 300), by: i && i.by === 'model' ? 'model' : 'rule' })).filter(i => i.title),
+      info: (Array.isArray(h.info) ? h.info : []).slice(0, 8).map(i => ({ title: str(i && i.title, 160), why: str(i && i.why, 400) })).filter(i => i.title), basis: str(h.basis, 400) } : null; }
   S.localHelpers = Array.isArray(S.localHelpers) ? S.localHelpers.filter(x => typeof x === 'string' && /^[a-f0-9]{16}$/.test(x)).slice(0, 200) : [];
   for (const d of S.datasets) for (const dim of ['project','session','model','attribution']) {
     for (const row of d.breakdowns?.[dim] || []) {

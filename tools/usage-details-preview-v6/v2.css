@@ -321,6 +321,9 @@ body .habit-run{margin-left:auto;font-size:12px;font-weight:700;color:var(--bran
 body .habit-run:hover{background:var(--brand-soft)}
 body .habit-wait{margin:0 0 8px;font-size:12px;color:var(--brand)}
 body .habit-how{margin:3px 0 0;font-size:13px;font-weight:600;color:var(--ink)}
+body .habit-info-head{margin:14px 0 4px;font-size:12px;font-weight:700;color:var(--muted)}
+body .habit-info .today-row-title{font-weight:600}
+body .habit-basis{margin:6px 0 0;font-size:11px;line-height:1.5;color:var(--muted)}
 /* every view on the floor: one ink rule per block, no card boxes (overview already) */
 body #view .panel{border:0;border-top:1px solid var(--ink);border-radius:0;background:none;box-shadow:none;padding-left:0;padding-right:0}
 body #view .records-table th{background:var(--soft)}
