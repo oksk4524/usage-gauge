@@ -46,7 +46,7 @@ async function main(){
       const db=new DatabaseSync(path.join(os.homedir(),'.aside','u','0','state.db'),{readOnly:true});
       try{for(const s of db.prepare('SELECT id,title,parent_id FROM sessions WHERE incognito IS NOT 1').all()){const h=crypto.createHmac('sha256',key).update(String(s.id)).digest('hex').slice(0,16);if(want.has(h)&&s.parent_id)helpers.push(h);
         if(want.has(h)&&typeof s.title==='string'){const tt=s.title.replace(/[\u0000-\u001f<>"|?*]/g,' ').replace(/\s+/g,' ').trim().slice(0,80);if(tt)names[h]=tt;}}}finally{db.close();}}}catch{}writeAtomic(path.join(DATA,'local-names.json'),JSON.stringify({purpose:'this_pc_dashboard_only',names,helpers}));   // helpers: the macOS menu bar skips them in "지금 할 일", like the page
-  for(const k of Object.keys(names))if(typeof names[k]==='string')names[k]=names[k].replace(/[\u00b7\u318d\u2022]/g,'\u2219');
+  for(const k of Object.keys(names))if(typeof names[k]==='string')names[k]=names[k].replace(/\s*[\u00b7\u318d\u2022\u2219]\s*/g,', ');   // no middle dots on screen (WRITING.md): a list becomes commas
   const tpl=fs.readFileSync(path.join(APP,'tools','usage-details-preview-v6','template.html'),'utf8'),aside=asideCompaction();
   const writePage=habit=>writeAtomic(path.join(DASH,'usage-gauge.html'),build(tpl,{...snap,localNames:names,localHelpers:helpers,localAside:aside,localHabit:habit}));
   writePage(readHabit());

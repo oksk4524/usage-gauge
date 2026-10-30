@@ -91,10 +91,10 @@ module.exports = async function({assert, fs, vm, core, build, sampleBase}) {
     assert.ok(!panel.includes('계정 한도')&&!panel.includes('합산하지 않아요')&&!panel.includes('강조해요'),'no explanatory prose in the panel');
     assert.equal((panel.match(/quota-value num warning/g)||[]).length,1);assert.ok(panel.includes('track warning')&&!panel.includes('5% 이하'));
     assert.ok(/<div class="quota-value num">96%/.test(panel)&&panel.includes('style="width:96%"'));
-    assert.ok(/초기화 [^<]+/.test(panel),'short reset time when known');
+    assert.ok(/[^<>]+에 다시 차요/.test(panel),'short reset time when known');
     assert.ok(!panel.includes('확인:')&&!panel.includes('2026'),'exact timestamps and year are not on the first screen');
     e.clk({usage:'1'});const b=e.body();
-    assert.ok(/확인: [^<]*2026[^<]*경과/.test(b)&&b.includes('초기화: ')&&b.includes('출처: test_probe')&&b.includes('실시간 상태나 예측이 아니고'));e.clk({},'dialog-close');
+    assert.ok(/확인: [^<]*2026[^<]*경과/.test(b)&&/에 다시 차요|다시 차는 시각을 아직 몰라요/.test(b)&&b.includes('출처: test_probe')&&b.includes('실시간 상태나 예측이 아니고'));e.clk({},'dialog-close');
     // no limit for the service: one line only
     const e2=env({host:700});e2.clk({provider:'codex'});v=e2.view();const p2=v.slice(v.indexOf('id="quota-panel"'));
     assert.ok(p2.includes('한도 미확인')&&!p2.includes('quota-row')&&!p2.includes('track')&&!p2.includes('저장된 값'));

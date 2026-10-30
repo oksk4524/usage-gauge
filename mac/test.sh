@@ -24,3 +24,5 @@ if(!acct.accountId||acct.accountLabel!=="pe***@example.com")throw Error("account
 console.log("PASS assemble.cjs reads the app limits feed ("+ok.join(", ")+"; account "+acct.accountLabel+")");
 })().catch(e=>{console.error(e.message);process.exit(1);});
 ' "$(pwd)/../tools/usage-insights-collector/assemble.cjs" "$TMP/limits.jsonl" "$TMP/emptyhome"
+# house writing rule (WRITING.md): no middle dots in strings people see
+"$NODE" --no-warnings ../tools/usage-insights-collector/writing-tests.cjs

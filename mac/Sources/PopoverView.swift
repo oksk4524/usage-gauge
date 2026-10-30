@@ -149,7 +149,7 @@ enum Preview {
         let m = PopoverModel()
         m.header = Design.header(lastCheck: now, main: [codex, claude, grok], now: now)
         m.gauges = zip([codex, claude, grok, gem], Design.logoKeys).map { Design.gauge($0, logo: $1, now: now, tz: tz) }
-        m.todo = Design.Todo(name: "\"[유령마작] 점검·스토리·최적화\"", tokens: Design.compact(852373) + " 토큰")
+        m.todo = Design.Todo(name: "\"[유령마작] 점검, 스토리, 최적화\"", tokens: Design.compact(852373) + " 토큰")
         return m
     }
 

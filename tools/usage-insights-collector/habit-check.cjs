@@ -22,6 +22,8 @@ const UNSUPPORTED=new Set(['grok_cli_local','antigravity_local']);
 const ASIDE_SETS=new Set(['claude_aside_local','codex_aside_local','grok_aside_local','aside_aside_local']);
 const pct=(a,b)=>b>0?Math.round(100*a/b):0;
 const pct1=(a,b)=>b>0?Math.round(1000*a/b)/10:0;
+// on screen percentages are whole numbers (WRITING.md 3); under 1% reads "1% 미만"
+const P=x=>x<1?'1% 미만':Math.round(x)+'%',PN=x=>x<1?1:Math.round(x);
 const fmt=n=>{n=Math.round(n);return n>=1e8?(Math.round(n/1e7)/10)+'억':n>=1e4?Math.round(n/1e4)+'만':String(n);};
 
 // ---- price ratios (input = 1). 공개 API 요금 비율 기준, 구독 한도 실제 차감 방식은 비공개라 추정. ----
@@ -42,7 +44,10 @@ function modelLabel(id){const s=String(id||'');if(!s||s==='unknown')return '모�
   let m=s.match(/^claude-([a-z]+)-(\d+)-(\d+)/i);if(m)return m[1][0].toUpperCase()+m[1].slice(1)+' '+m[2]+'.'+m[3];
   m=s.match(/^gpt-([\d.]+)-?(.*)$/i);if(m)return 'GPT-'+m[1]+(m[2]?' '+m[2].split('-').map(w=>w&&w[0].toUpperCase()+w.slice(1)).join(' '):'');
   m=s.match(/^(grok|gemini)-(.+)$/i);if(m)return m[1][0].toUpperCase()+m[1].slice(1)+' '+m[2];return s.slice(0,40);}
-const BASIS='한도 부담 = 새 입력×1 + 캐시 저장×1.25(5분)·2(1시간) + 캐시 다시 읽기×0.1 + 출력×모델 비율(Claude 5, GPT-5 8, 모름 4). '+PRICE_NOTE+'. 지난 30일, 출처끼리 더하지 않음.';
+// on-screen wording (owner, 2026-10-30): "한도를 쓴 양", never "부담", "비중" or "가중"; the weights stay in PRICES above
+const BASIS='다시 읽기(캐시)는 거의 10분의 1, AI가 쓴 답은 몇 배로 쳐요. 요금 기준 추정, 지난 30일 기록이고 출처끼리 더하지 않아요.';
+// house writing rules (WRITING.md at the repository root, copied next to the code by the installers); the model follows them every time
+function writingRules(){for(const p of [path.resolve(__dirname,'..','..','WRITING.md')]){try{const t=fs.readFileSync(p,'utf8').replace(/^#.*\n+/,'').trim();if(t)return t;}catch{}}return '해요체로 짧게 써요. 가운데 점은 쓰지 말고 나열은 쉼표로 써요. "한도를 쓴 양"이라고 쓰고 "부담", "비중", "가중"은 쓰지 않아요.';}
 
 // ---- 1. measure one dataset from its request records (sorted by session, then time) ----
 const EV={minPrev:20000,idleMin:5,compactPrev:100000};
@@ -123,15 +128,15 @@ function buildInput({snap,names,indexPath,home=os.homedir(),now=Date.now()}){
 // ---- 3. rules: which items appear (mechanical cache loss only), with the numbers that justify them ----
 const THRESH={coldShare:3,switchShare:0.5,switchMin:2,compactSave:3};
 function rules(input){const F=[];
-  const add=(id,source,impact,facts,fixed)=>F.push({id,source,impact,facts,shares:[facts.share],fixed});
+  const add=(id,source,impact,facts,fixed)=>F.push({id,source,impact,facts,shares:[PN(facts.shareRaw)],fixed});
   for(const [k,s] of Object.entries(input.sources)){const share=x=>pct1(x,s.total);
     if(s.cold.n>=3&&share(s.cold.burden)>=THRESH.coldShare){const life=s.lifetime;
-      add('cold-'+k,s.name,s.cold.burden,{source:s.name,restarts:s.cold.n,burden:Math.round(s.cold.burden),share:share(s.cold.burden),cacheMinutes:life,readRatio:s.readRatio},
-        {criterion:1,title:`${s.name}: 캐시가 살아 있을 때 이어 쓰기`,why:`오래 쉬다 돌아와 캐시가 만료된 뒤 대화 전체를 다시 저장한 게 ${s.cold.n}번, 한도 부담 ${fmt(s.cold.burden)}(${s.name} 전체의 ${share(s.cold.burden)}%)이에요.${life?` 기록상 캐시는 대략 ${life}분까지 살아 있었어요.`:''}`,
-         how:life?`대략 ${life}분 안에 이어서 쓰면 캐시를 다시 읽는 것(새 입력의 ${s.readRatio}배)으로 끝나요. 오래 쉴 거면 정리해 두고 새 대화로 시작해요.`:`캐시가 살아 있을 때 이어서 써요. 오래 쉴 거면 정리해 두고 새 대화로 시작해요.`});}
+      add('cold-'+k,s.name,s.cold.burden,{source:s.name,restarts:s.cold.n,burden:Math.round(s.cold.burden),shareRaw:share(s.cold.burden),share:PN(share(s.cold.burden)),cacheMinutes:life,readRatio:s.readRatio},
+        {criterion:1,title:`${s.name}: 캐시가 살아 있을 때 이어 쓰기`,why:`오래 쉬다 돌아와 캐시가 만료돼 대화 전체를 새로 저장(캐시)한 게 ${s.cold.n}번이에요. 한도를 쓴 양은 ${fmt(s.cold.burden)}, ${s.name} 전체의 ${P(share(s.cold.burden))}예요.${life?` 기록상 캐시는 대략 ${life}분까지 살아 있었어요.`:''}`,
+         how:life?`대략 ${life}분 안에 이어서 쓰면 다시 읽기(캐시)로 끝나요. 오래 쉴 거면 정리해 두고 새 대화로 시작해요.`:`캐시가 살아 있을 때 이어서 써요. 오래 쉴 거면 정리해 두고 새 대화로 시작해요.`});}
     if(s.switch.n>=THRESH.switchMin&&share(s.switch.burden)>=THRESH.switchShare)
-      add('switch-'+k,s.name,s.switch.burden,{source:s.name,switches:s.switch.n,burden:Math.round(s.switch.burden),share:share(s.switch.burden)},
-        {criterion:2,title:`${s.name}: 모델은 대화 처음에 정하기`,why:`대화 중간에 모델을 바꿔 대화 전체를 다시 저장한 게 ${s.switch.n}번, 한도 부담 ${fmt(s.switch.burden)}(${s.name} 전체의 ${share(s.switch.burden)}%)이에요.`,how:'모델과 생각 단계는 대화를 시작할 때 정하고, 바꿀 일이 생기면 새 대화에서 바꿔 캐시를 이어 써요.'});
+      add('switch-'+k,s.name,s.switch.burden,{source:s.name,switches:s.switch.n,burden:Math.round(s.switch.burden),shareRaw:share(s.switch.burden),share:PN(share(s.switch.burden))},
+        {criterion:2,title:`${s.name}: 모델은 대화 처음에 정하기`,why:`대화 중간에 모델을 바꿔 대화 전체를 새로 저장(캐시)한 게 ${s.switch.n}번이에요. 한도를 쓴 양은 ${fmt(s.switch.burden)}, ${s.name} 전체의 ${P(share(s.switch.burden))}예요.`,how:'모델과 생각 단계는 대화를 시작할 때 정하고, 바꿀 일이 생기면 새 대화에서 바꿔 캐시를 이어 써요.'});
   }
   // compaction: Aside's one setting (all Aside sources together), Claude Code's own window
   for(const [group,keys,where] of [['Aside',[...ASIDE_SETS],'Aside 설정에서 자동 압축 기준을'],['Claude Code',['claude_cli_local'],'CLAUDE_CODE_AUTO_COMPACT_WINDOW를']]){
@@ -140,20 +145,20 @@ function rules(input){const F=[];
     const c0=src[0][1].compactCurve,u=c0.unit==='%'?'%':' 토큰',cur=c0.unit==='%'?c0.current:fmt(c0.current),pick=c0.unit==='%'?p.pick:fmt(p.pick),lower=p.lower;
     const rows=src.map(([k,s],i)=>({name:s.name,n:s.compact.n,rb:s.compact.burden,rs:pct1(s.compact.burden,s.total),n2:p.per[i].n,save:p.per[i].save,ss:p.per[i].saveShare}));
     const facts={setting:group,current:c0.current,pick:p.pick,direction:lower?'lower':'higher'};
-    rows.forEach((r,i)=>Object.assign(facts,{['source'+(i+1)]:r.name,['compactions'+(i+1)]:r.n,['newCompactions'+(i+1)]:r.n2,['rewriteBurden'+(i+1)]:Math.round(r.rb),['rewriteShare'+(i+1)]:r.rs,['save'+(i+1)]:Math.round(r.save),['saveShare'+(i+1)]:r.ss}));
-    const f={criterion:3,title:`${group} 자동 압축 기준은 ${cur}${u}보다 ${pick}${u} 쪽이 부담이 적어요`,
-      why:`압축 뒤 대화를 다시 저장한 부담은 ${rows.map(r=>`${r.name} ${r.n}번 ${fmt(r.rb)}(전체의 ${r.rs}%)`).join(', ')}로 작아요. 기록된 대화로 다시 계산하면 ${pick}${u}로 ${lower?'낮출':'올릴'} 때 압축은 ${rows.map(r=>`${r.name} ${r.n}→${r.n2}번`).join(', ')}으로 ${lower?'늘지만':'줄고'} ${lower?'요청마다 싣는 맥락이 작아져서':''} 부담이 ${rows.map(r=>`${r.name} ${fmt(r.save)}(전체의 ${r.ss}%)`).join(', ')} 적어져요. 요약 뒤 다시 찾아 읽는 양은 이 계산에 없어요.`.replace(/  +/g,' '),
+    rows.forEach((r,i)=>Object.assign(facts,{['source'+(i+1)]:r.name,['compactions'+(i+1)]:r.n,['newCompactions'+(i+1)]:r.n2,['rewriteBurden'+(i+1)]:Math.round(r.rb),['rewriteShare'+(i+1)]:PN(r.rs),['save'+(i+1)]:Math.round(r.save),['saveShare'+(i+1)]:PN(r.ss)}));
+    const f={criterion:3,title:`${group} 자동 압축 기준은 ${cur}${u}보다 ${pick}${u} 쪽이 한도를 덜 써요`,
+      why:`압축 뒤 대화를 새로 저장(캐시)하느라 한도를 쓴 양은 ${rows.map(r=>`${r.name} ${r.n}번 ${fmt(r.rb)}(전체의 ${P(r.rs)})`).join(', ')}로 작아요. 기록된 대화로 다시 계산하면 ${pick}${u}로 ${lower?'낮출':'올릴'} 때 압축은 ${rows.map(r=>`${r.name} ${r.n}→${r.n2}번`).join(', ')}으로 ${lower?'늘지만':'줄고'} ${lower?'요청마다 싣는 맥락이 작아져서':''} 한도를 ${rows.map(r=>`${r.name} ${fmt(r.save)}(전체의 ${P(r.ss)})`).join(', ')} 덜 써요. 요약 뒤 다시 찾아 읽는 양은 이 계산에 없어요.`.replace(/  +/g,' '),
       how:`${where} ${pick}${u}로 ${lower?'낮춰요':'올려요'}.${lower?' 압축하면 앞 내용은 요약돼요.':''}`};
-    F.push({id:'compact-'+group,source:group,impact:Math.max(...rows.map(r=>r.save)),facts,shares:rows.flatMap(r=>[r.rs,r.ss]),fixed:f});}
+    F.push({id:'compact-'+group,source:group,impact:Math.max(...rows.map(r=>r.save)),facts,shares:rows.flatMap(r=>[PN(r.rs),PN(r.ss)]),fixed:f});}
   return F.sort((x,y)=>y.impact-x.impact);}
 
 // neutral lines (not advice): burden per source, cache hit rate, model shares, compaction cost when no item, unsupported sources
 function infoLines(input,findings){const out=[];
   const list=Object.entries(input.sources).sort((a,b)=>b[1].total-a[1].total);
-  for(const [k,s] of list){const notes=[];if(s.ttlUnknown)notes.push('캐시 저장 시간이 기록에 없어 저장은 1.25배(5분 기준)로 계산했어요'+(s.lifetime>=30?`. 기록상 캐시가 ${s.lifetime}분 가까이 살아 있어 실제로는 1시간 저장(2배)일 수 있어요.`:'.'));if(s.outUnknown.length)notes.push(s.outUnknown.slice(0,4).join(', ')+'는 공개 출력 요금 비율을 확인하지 못해 4배로 계산했어요.');
-    out.push({title:`${s.name}: 한도 부담 ${fmt(s.total)}, 캐시 적중 ${s.hitPct}%`,why:`모델별 한도 부담 비중: ${s.byModel.slice(0,4).map(m=>m.label+' '+(m.share<1?'1% 미만':m.share+'%')).join(', ')}. 캐시 다시 읽기는 새 입력의 ${s.readRatio}배라 적중률이 높을수록 좋아요.${notes.length?' '+notes.join(' '):''}`});
-    if(s.compact.n>=3&&!findings.some(f=>f.id===(ASIDE_SETS.has(k)?'compact-Aside':'compact-Claude Code')))out.push({title:`${s.name}: 자동 압축 뒤 다시 저장 ${s.compact.n}번, 부담 ${fmt(s.compact.burden)}(전체의 ${pct1(s.compact.burden,s.total)}%)`,why:s.compactCurve?'기록된 대화로 다시 계산하면 압축 기준을 바꿔도 부담 차이가 작아서 지금 기준을 그대로 둬도 돼요.':'압축 기준 설정을 읽지 못해 방향은 계산하지 않았어요.'});}
-  if(input.excluded.length)out.push({title:`${input.excluded.join(', ')}: 한도 부담 계산 지원 안 함`,why:'캐시 기록이 없거나 요금 기준이 확인되지 않아 부담 계산에서 뺐어요.'});
+  for(const [k,s] of list){const notes=[];if(s.ttlUnknown)notes.push('캐시가 몇 분 살아 있는지 기록에 없어 새로 저장(캐시)은 1.25배(5분 기준)로 셌어요'+(s.lifetime>=30?`. 기록상 ${s.lifetime}분 가까이 살아 있어 실제로는 2배(1시간 기준)일 수 있어요.`:'.'));if(s.outUnknown.length)notes.push(s.outUnknown.slice(0,4).join(', ')+'는 AI가 쓴 답을 몇 배로 칠지 공개 요금을 찾지 못해 4배로 셌어요.');
+    out.push({title:`${s.name}: 한도를 쓴 양 ${fmt(s.total)}, 캐시 적중 ${s.hitPct}%`,why:`모델별로 한도를 쓴 양 (${s.byModel.slice(0,4).map(m=>m.label+' '+(m.share<1?'1% 미만':m.share+'%')).join(', ')}). 다시 읽기(캐시)는 새 입력의 ${s.readRatio}배라 적중률이 높을수록 좋아요.${notes.length?' '+notes.join(' '):''}`});
+    if(s.compact.n>=3&&!findings.some(f=>f.id===(ASIDE_SETS.has(k)?'compact-Aside':'compact-Claude Code')))out.push({title:`${s.name}: 자동 압축 뒤 새로 저장(캐시) ${s.compact.n}번, 한도를 쓴 양 ${fmt(s.compact.burden)}(전체의 ${P(pct1(s.compact.burden,s.total))})`,why:s.compactCurve?'기록된 대화로 다시 계산하면 압축 기준을 바꿔도 한도를 쓰는 양이 거의 같아서 지금 기준을 그대로 둬도 돼요.':'압축 기준 설정을 읽지 못해 방향은 계산하지 않았어요.'});}
+  if(input.excluded.length)out.push({title:`${input.excluded.join(', ')}: 한도를 쓴 양은 지원 안 함`,why:'캐시 기록이 없어 셀 수 없어요. 해당 서비스 기록에 캐시 값이 생기면 보여요.'});
   return out.slice(0,8);}
 
 // ---- 4. guardrails on model text ----
@@ -164,6 +169,8 @@ const BANNED=[
   {re:/(대화|작업)[^.。]{0,12}(나누|나눠|쪼개|분리)/,why:'splitting conversations because of re-reads is not advised'},
   {re:/(sonnet|haiku|opus|소넷|하이쿠|오퍼스|싼 모델|작은 모델|가벼운 모델)/i,why:'model choice is not waste; no model advice'},
   {re:/(원|달러|\$|USD|비용이\s*\d)/,why:'no money amounts'},
+  {re:/[\u00b7\u2022\u2219]/,why:'no middle dots (WRITING.md): commas, line breaks or sentences'},
+  {re:/(부담|비중|가중)/,why:'owner wording: say "한도를 쓴 양", not 부담, 비중 or 가중'},
   {re:/[a-z]+[A-Z][A-Za-z]+|\b(burden|share|readRatio|cacheMinutes)\b/,why:'raw field names'}];
 function numbersOf(text){const out=[];const re=/(\d[\d,]*(?:\.\d+)?)\s*(억|만|%|배|분|줄|개|번)?/g;let m;while((m=re.exec(text))){let v=Number(m[1].replace(/,/g,''));if(m[2]==='억')v*=1e8;else if(m[2]==='만')v*=1e4;out.push(v);}return out;}
 const CONST_NUMS=[0.1,0.25,1,1.25,2,4,5,8,30];
@@ -177,27 +184,37 @@ function validate(items,findings){const byId=new Map(findings.map(f=>[f.id,f]));
       else{const sentences=text.split(/[.。!?\n]/);const b=BANNED.find(x=>sentences.some(s=>x.re.test(s)&&!(x.unless&&x.unless.test(s))));if(b)reason=b.why;
         else if(f.facts.direction==='lower'&&/(높여|높이|올려|올리)/.test(text))reason='direction contradicts the replay';
         else if(f.facts.direction==='higher'&&/(낮춰|낮추)/.test(text))reason='direction contradicts the replay';
-        else if(!numbersOf(text).some(n=>(f.shares||[]).includes(n)))reason='share of total missing';}}
+        else if(!numbersOf(text).some(n=>(f.shares||[]).includes(n)))reason='share of total missing';
+        else if(/추정/.test(text))reason='the page says "요금 기준 추정" once, not in each item';
+        else if((text.match(/1% 미만/g)||[]).length<([f.fixed.title,f.fixed.why,f.fixed.how].join(' ').match(/1% 미만/g)||[]).length)reason='a share under 1% must stay "1% 미만"';
+        else if(f.fixed.criterion===1&&!/새 대화/.test(it.how))reason='cold restart advice must keep the new-conversation step';
+        else if(f.fixed.criterion===2&&!/처음/.test(it.how))reason='model switch advice must say to choose at the start';}}
     if(reason)dropped.push({title:String(it&&it.title||'').slice(0,80),reason});else kept.push({id:f.id,criterion:[f.fixed.criterion],title:it.title.trim(),why:it.why.trim(),how:it.how.trim()});}
   return {kept:kept.slice(0,5),dropped};}
 
 // ---- 5. the model call ----
 function prompt(findings){return `아래는 한 사람의 AI 토큰 사용 기록을 코드로 점검해 이미 판정한 결과예요(대화 내용 없음, 집계값만).
 판정 원칙(반드시 지켜요):
-- 캐시 다시 읽기는 좋은 거예요. 새 입력의 약 0.1배 부담이라, 다시 읽은 양이 많거나 몇 배라는 이유로 줄이라고 하지 말아요. 대화를 나누라고 하지 말아요.
-- 부담은 "한도 부담(요금 기준 추정)"이에요: 새 입력×1 + 캐시 저장×1.25(5분)·2(1시간) + 캐시 다시 읽기×0.1 + 출력×모델 비율. ${PRICE_NOTE}.
-- 낭비로 보는 건 캐시를 잃은 경우뿐이에요: 오래 쉬어 캐시가 만료된 뒤 다시 저장, 대화 중간 모델 전환, 자동 압축 뒤 다시 저장.
+- 캐시 다시 읽기는 좋은 거예요. 새 입력의 약 0.1배로 쳐서, 다시 읽은 양이 많거나 몇 배라는 이유로 줄이라고 하지 말아요. 대화를 나누라고 하지 말아요.
+- 숫자는 "한도를 쓴 양"이에요(요금 기준 추정: 새 입력×1, 캐시 저장×1.25(5분) 또는 2(1시간), 다시 읽기(캐시)×0.1, AI가 쓴 답×모델 비율. ${PRICE_NOTE}).
+- 말투: "한도를 쓴 양", "모델별로 한도를 쓴 양"처럼 쉬운 말로 써요. "부담", "비중", "가중"이라는 말은 쓰지 말아요.
+- 낭비로 보는 건 캐시를 잃은 경우뿐이에요: 오래 쉬어 캐시가 만료된 뒤 새로 저장(캐시), 대화 중간 모델 전환, 자동 압축 뒤 다시 저장.
 - 어떤 모델을 쓰는지는 낭비가 아니에요. 모델 이름(Opus, Sonnet, Haiku 등)을 꺼내거나 더 작은 모델로 바꾸라고 하지 말아요.
 - 압축 기준은 facts의 direction 방향으로만 말해요(lower=낮추기, higher=올리기).
 규칙:
 - 아래 항목만 다뤄요. 항목을 더하거나 빼지 말고, id를 그대로 써요.
-- 숫자는 facts와 draft에 있는 값만 쓰고 새로 계산하지 말아요. 각 항목에 부담 숫자와 전체 대비 비율(%)을 꼭 넣어요.
+- 숫자는 facts와 draft에 있는 값만 쓰고 새로 계산하지 말아요. 각 항목에 한도를 쓴 양 숫자와 전체 대비 비율(%)을 꼭 넣어요.
 - 비용이나 돈은 말하지 말아요. 서로 다른 출처(source)의 숫자를 더하지 말아요.
 - 쉬었다 돌아온 뒤 압축하라고 하지 말아요(그때가 가장 비싸요).
+- "요금 기준 추정"은 화면 아래에 이미 한 번 적혀 있어요. 항목에는 "추정"이라는 말을 쓰지 말아요(규칙 8).
+- draft의 "1% 미만"은 그대로 써요. 캐시 만료 항목의 how에는 "새 대화"를, 모델 전환 항목의 how에는 "처음"을 꼭 남겨요.
+화면 글쓰기 규칙(매번 따라요):
+${writingRules()}
+
 할 일: draft를 더 쉽고 긍정적인 한국어로 다듬어요. 캐시를 살려 쓰는 쪽으로, 짧게, 존댓말("~해요").
 출력: JSON 배열만. [{"id":"...","title":"...","why":"...","how":"..."}]
 
-항목(코드 판정, 부담 큰 순):
+항목(코드 판정, 한도를 많이 쓴 순):
 ${JSON.stringify(findings.map(f=>({id:f.id,facts:f.facts,draft:{title:f.fixed.title,why:f.fixed.why,how:f.fixed.how}})),null,1)}`;}
 // macOS: launchd and the menu bar app start with a minimal PATH, so also look where Homebrew and the official installers put the CLIs
 const EXTRA_DIRS=process.platform==='darwin'?[path.join(os.homedir(),'.local','bin'),'/opt/homebrew/bin','/usr/local/bin']:[];
@@ -230,4 +247,4 @@ async function habitCheck({snap,names,indexPath,workDir,home,useModel=true,now=D
   const rank=new Map(findings.map((f,i)=>[f.id,i]));items.sort((a,b)=>rank.get(a.id)-rank.get(b.id));
   return {...base,model:items.some(i=>i.by==='model')?ans.model:null,items:items.slice(0,5),dropped,findings:findings.length};}
 
-module.exports={buildInput,analyze,replay,compactionCurve,pickCompaction,rules,infoLines,validate,habitCheck,prompt,BANNED,PRICES,PRICE_NOTE,BASIS,numbersOf,priceFor};
+module.exports={writingRules,buildInput,analyze,replay,compactionCurve,pickCompaction,rules,infoLines,validate,habitCheck,prompt,BANNED,PRICES,PRICE_NOTE,BASIS,numbersOf,priceFor};

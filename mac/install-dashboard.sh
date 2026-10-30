@@ -69,7 +69,7 @@ VER="$("$NODE" --version | sed 's/^v//')"
 
 # code: same relative layout as the repository, so the modules find each other (same list as install-dashboard.ps1)
 FILES=(
-  NOTICE assets/service-logos.json
+  NOTICE WRITING.md assets/service-logos.json
   tools/service-logos.cjs
   tools/usage-insights-collector/collect.cjs tools/usage-insights-collector/indexed.cjs
   tools/usage-insights-collector/assemble.cjs tools/usage-insights-collector/refresh-dashboard.cjs tools/usage-insights-collector/habit-check.cjs
