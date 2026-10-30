@@ -21,8 +21,11 @@ function build(base, input) {
   { const a = S.localAside; S.localAside = a && typeof a === 'object' && Number.isFinite(a.thresholdPercent) && a.thresholdPercent > 0 && a.thresholdPercent <= 100 ? { enabled: a.enabled !== false, thresholdPercent: Math.round(a.thresholdPercent) } : null; }
   { const h = S.localHabit, str = (v, n) => typeof v === 'string' ? v.replace(/[\u0000-\u001f]/g, ' ').slice(0, n) : '';
     S.localHabit = h && typeof h === 'object' && Array.isArray(h.items) ? { at: str(h.at, 40), model: ['Claude Haiku', 'GPT-6 Luna'].includes(h.model) ? h.model : null, dropped: Array.isArray(h.dropped) ? h.dropped.length : 0,
-      items: h.items.slice(0, 5).map(i => ({ title: str(i && i.title, 160), why: str(i && i.why, 600), how: str(i && i.how, 300), by: i && i.by === 'model' ? 'model' : 'rule' })).filter(i => i.title),
+      items: h.items.slice(0, 5).map(i => ({ title: str(i && i.title, 160), why: str(i && i.why, 600), how: str(i && i.how, 300), by: i && i.by === 'model' ? 'model' : 'rule', evidence: i && ['기록으로 확인함', '추정'].includes(i.evidence) ? i.evidence : null })).filter(i => i.title),
+      table: (Array.isArray(h.table) ? h.table : []).slice(0, 10).map(r => ({ source: str(r && r.source, 40), used: str(r && r.used, 20), hit: str(r && r.hit, 10), models: str(r && r.models, 200) })).filter(r => r.source),
+      notes: (Array.isArray(h.notes) ? h.notes : []).slice(0, 6).map(n => str(n, 400)).filter(Boolean),
       info: (Array.isArray(h.info) ? h.info : []).slice(0, 8).map(i => ({ title: str(i && i.title, 160), why: str(i && i.why, 400) })).filter(i => i.title), basis: str(h.basis, 400) } : null; }
+  { const w = S.localHabit && input.localHabit && input.localHabit.weights, ok = {}; if (w && typeof w === 'object') for (const [k, v] of Object.entries(w)) if (/^[a-z_]{1,40}$/.test(k) && v && typeof v === 'object') ok[k] = { write: Number.isFinite(v.write) && v.write >= 1 && v.write <= 2 ? v.write : null, life: Number.isFinite(v.life) && v.life > 0 && v.life <= 240 ? v.life : null }; S.localWeights = ok; }
   S.localHelpers = Array.isArray(S.localHelpers) ? S.localHelpers.filter(x => typeof x === 'string' && /^[a-f0-9]{16}$/.test(x)).slice(0, 200) : [];
   for (const d of S.datasets) for (const dim of ['project','session','model','attribution']) {
     for (const row of d.breakdowns?.[dim] || []) {
