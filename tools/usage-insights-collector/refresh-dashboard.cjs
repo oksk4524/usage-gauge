@@ -17,6 +17,8 @@ function lock(){try{fs.writeFileSync(LOCK,String(process.pid),{flag:'wx'});retur
 
 // Aside's compaction point: when a conversation is summarized (percent of the model's context window). Read-only; nothing else is kept.
 function asideCompaction(){try{const s=JSON.parse(fs.readFileSync(path.join(os.homedir(),'.aside','u','0','settings.json'),'utf8')),c=s&&s.compaction;if(!c||typeof c!=='object')return null;return {enabled:c.enabled!==false,thresholdPercent:Number(c.thresholdPercent)};}catch{return null;}}
+const HABIT=process.argv.slice(2).some(a=>a==='--habit'||/^usagegauge:\/\/habit-check\/?$/i.test(a));
+const readHabit=()=>{try{return JSON.parse(fs.readFileSync(path.join(DATA,'habit-ai.json'),'utf8'));}catch{return null;}};
 async function main(){
  fs.mkdirSync(DATA,{recursive:true});
  if(!lock()){log({ok:false,reason:'already_running'});return;}
@@ -44,8 +46,15 @@ async function main(){
       try{for(const s of db.prepare('SELECT id,title,parent_id FROM sessions WHERE incognito IS NOT 1').all()){const h=crypto.createHmac('sha256',key).update(String(s.id)).digest('hex').slice(0,16);if(want.has(h)&&s.parent_id)helpers.push(h);
         if(want.has(h)&&typeof s.title==='string'){const tt=s.title.replace(/[\u0000-\u001f<>"|?*]/g,' ').replace(/\s+/g,' ').trim().slice(0,80);if(tt)names[h]=tt;}}}finally{db.close();}}}catch{}writeAtomic(path.join(DATA,'local-names.json'),JSON.stringify({purpose:'this_pc_dashboard_only',names}));
   for(const k of Object.keys(names))if(typeof names[k]==='string')names[k]=names[k].replace(/[\u00b7\u318d\u2022]/g,'\u2219');
-  const page=build(fs.readFileSync(path.join(APP,'tools','usage-details-preview-v6','template.html'),'utf8'),{...snap,localNames:names,localHelpers:helpers,localAside:asideCompaction()});
-  writeAtomic(path.join(DASH,'usage-gauge.html'),page);
+  const tpl=fs.readFileSync(path.join(APP,'tools','usage-details-preview-v6','template.html'),'utf8'),aside=asideCompaction();
+  const writePage=habit=>writeAtomic(path.join(DASH,'usage-gauge.html'),build(tpl,{...snap,localNames:names,localHelpers:helpers,localAside:aside,localHabit:habit}));
+  writePage(readHabit());
+  if(HABIT){const prev=readHabit();
+   if(prev&&prev.at&&Date.now()-Date.parse(prev.at)<120e3)log({ok:true,habit:'skipped_recent'});
+   else{const {habitCheck}=require(path.join(APP,'tools','usage-insights-collector','habit-check.cjs'));const h0=Date.now();
+    const r=await habitCheck({snap,names,indexPath:path.join(HOME,'usage-index.sqlite'),workDir:path.join(HOME,'ai')});
+    writeAtomic(path.join(DATA,'habit-ai.json'),JSON.stringify(r));writePage(r);
+    log({ok:true,habit:'done',model:r.model,items:r.items.length,dropped:r.dropped.length,ms:Date.now()-h0});}}
   const partial=snap.datasets.filter(d=>d.coverage&&d.coverage.status==='partial'&&(d.coverage.issues||[]).includes('scan_limit_reached')).length;
   log({ok:true,ms:Date.now()-t0,bytesRead:local.audit.bytesRead,skippedByBudget:local.audit.filesSkippedByBudget||0,stoppedSources:partial});
  }catch(e){log({ok:false,ms:Date.now()-t0,reason:/^[a-z_]{1,64}$/.test(e.message)?e.message:'refresh_failed'});process.exitCode=1;}

@@ -15,6 +15,7 @@ $Repo = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 
 if ($Uninstall) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-Item 'HKCU:\Software\Classes\usagegauge' -Recurse -ErrorAction SilentlyContinue
     if (Test-Path $Dash) { Remove-Item $Dash -Recurse -Force }
     Write-Host 'Removed the dashboard and its refresh task. The usage index and the widget are untouched.'
     return
@@ -29,7 +30,7 @@ $files = @(
     'NOTICE', 'assets\service-logos.json',
     'tools\service-logos.cjs',
     'tools\usage-insights-collector\collect.cjs', 'tools\usage-insights-collector\indexed.cjs',
-    'tools\usage-insights-collector\assemble.cjs', 'tools\usage-insights-collector\refresh-dashboard.cjs',
+    'tools\usage-insights-collector\assemble.cjs', 'tools\usage-insights-collector\refresh-dashboard.cjs', 'tools\usage-insights-collector\habit-check.cjs',
     'tools\usage-details-preview-v6\builder.cjs', 'tools\usage-details-preview-v6\client.cjs',
     'tools\usage-details-preview-v6\core.cjs', 'tools\usage-details-preview-v6\v2.css',
     'tools\usage-details-preview-v6\template.html'
@@ -69,4 +70,10 @@ $logon = New-ScheduledTaskTrigger -AtLogOn -User $me
 $principal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Priority 7
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger, $logon -Principal $principal -Settings $settings -Description 'UsageGauge: refresh the local usage dashboard from this PC''s log files every 30 minutes. Local files only, no network.' -Force | Out-Null
+# "AI habit check" button: the page links to usagegauge://habit-check, which runs the refresh with --habit (current user only)
+$proto = 'HKCU:\Software\Classes\usagegauge'
+New-Item -Path "$proto\shell\open\command" -Force | Out-Null
+Set-ItemProperty -Path $proto -Name '(default)' -Value 'URL:UsageGauge'
+Set-ItemProperty -Path $proto -Name 'URL Protocol' -Value ''
+Set-ItemProperty -Path "$proto\shell\open\command" -Name '(default)' -Value "`"$env:WINDIR\System32\conhost.exe`" --headless `"$NodePath`" --no-warnings `"$script`" --habit `"%1`""
 Write-Host "Installed. Page: $(Join-Path $Dash 'usage-gauge.html')"
