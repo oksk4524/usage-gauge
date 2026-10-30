@@ -56,6 +56,29 @@ enum Design {
         var detail: String?       // full status for the tooltip
         var tone: RingTone
         var fraction: Double      // 0...1 of the ring drawn
+        var second: String? = nil       // the other window under the weekly ring: "5시간 55%", "5시간 다 씀"
+        var secondReset: String? = nil  // when that window is low: "01:19에 다시 차요"
+        var secondUsedUp = false        // the 5-hour window blocks the service for now (drawn in red)
+    }
+
+    // below this a shorter window also shows when it fills again
+    static let secondLowBelow = 30.0
+
+    // the line(s) under a weekly ring for the service's other windows (Codex and Claude 5-hour); nil when there is none
+    static func secondLines(_ q: Quota, now: Date = Date(), tz: TimeZone = .current) -> (text: String, reset: String?, usedUp: Bool, detail: String)? {
+        let ws = MenuBarStrip.others(q)
+        guard !ws.isEmpty else { return nil }
+        let text = ws.map { $0.label + " " + (MenuBarStrip.isUsedUp($0) ? "다 씀" : Usage.remainingNumber($0.remaining) + "%") }.joined(separator: ", ")
+        // the reset of the lowest window, when it is low
+        let low = ws.filter { $0.remaining < secondLowBelow }.min { $0.remaining < $1.remaining }
+        var reset: String?
+        if let l = low, let r = l.reset { reset = r > now ? MenuBarStrip.clock(r, tz: tz) + "에 다시 차요" : "곧 다시 차요" }
+        let detail = ws.map { w -> String in
+            var d = w.label + " " + (MenuBarStrip.isUsedUp(w) ? "다 씀" : Usage.remainingNumber(w.remaining) + "% 남음")
+            if w.remaining < secondLowBelow, let r = w.reset { d += r > now ? ", " + MenuBarStrip.clock(r, tz: tz) + "에 다시 차요" : ", 곧 다시 차요" }
+            return d
+        }.joined(separator: "\n")
+        return (text, reset, ws.contains(where: MenuBarStrip.isUsedUp), detail)
     }
 
     static func gauge(_ q: Quota, logo: String, now: Date = Date(), tz: TimeZone = .current) -> Gauge {
@@ -67,8 +90,15 @@ enum Design {
             return Gauge(logo: logo, state: .usedUp, percentText: "—", caption: reset.isEmpty ? "다 씀" : reset + "까지",
                          detail: q.failing ? q.error : nil, tone: .red, fraction: 0)
         }
-        return Gauge(logo: logo, state: .value(q.remaining), percentText: Usage.remainingNumber(q.remaining), caption: reset,
-                     detail: q.failing ? q.error : nil, tone: tone(q.remaining), fraction: min(1, q.remaining / 100))
+        // the ring is the weekly limit; the 5-hour window goes on a small line under it
+        var g = Gauge(logo: logo, state: .value(q.remaining), percentText: Usage.remainingNumber(q.remaining), caption: reset,
+                      detail: q.failing ? q.error : nil, tone: tone(q.remaining), fraction: min(1, q.remaining / 100))
+        if let s = secondLines(q, now: now, tz: tz) {
+            g.second = s.text; g.secondReset = s.reset; g.secondUsedUp = s.usedUp
+            let weekLine = "주간 " + Usage.remainingNumber(q.remaining) + "% 남음"
+            g.detail = [weekLine, s.detail, g.detail].compactMap { $0 }.joined(separator: "\n")
+        }
+        return g
     }
 
     // a column is ~70pt wide: the full message goes to the tooltip

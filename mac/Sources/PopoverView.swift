@@ -63,6 +63,18 @@ struct GaugeColumn: View {
                 .font(.system(size: 10.5)).foregroundColor(Color(scheme.sub))
                 .lineLimit(1).minimumScaleFactor(0.85)
                 .padding(.top, 1)
+            // the other window (5-hour) under the weekly ring, small; red while it blocks the service
+            if let second = g.second {
+                Text(second)
+                    .font(.system(size: 10, weight: g.secondUsedUp ? .semibold : .regular))
+                    .foregroundColor(Color(g.secondUsedUp ? Palette.red : scheme.sub))
+                    .lineLimit(1).minimumScaleFactor(0.85)
+                    .padding(.top, 3)
+                if let r = g.secondReset {
+                    Text(r).font(.system(size: 10)).foregroundColor(Color(scheme.sub))
+                        .lineLimit(1).minimumScaleFactor(0.8)
+                }
+            }
         }
         .frame(maxWidth: .infinity)
         .help(g.detail ?? "")
