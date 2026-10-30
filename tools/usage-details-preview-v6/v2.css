@@ -317,6 +317,10 @@ body .overview-grid .quota-row .quota-value{font-size:20px}
 body .detail-save{margin-top:28px}
 body .detail-save .quota-value{font-size:18px;color:var(--ink)}
 body .detail-save .quota-row{padding:12px 0}
+body .habit-run{margin-left:auto;font-size:12px;font-weight:700;color:var(--brand);text-decoration:none;border:1px solid var(--brand);border-radius:999px;padding:3px 12px}
+body .habit-run:hover{background:var(--brand-soft)}
+body .habit-wait{margin:0 0 8px;font-size:12px;color:var(--brand)}
+body .habit-how{margin:3px 0 0;font-size:13px;font-weight:600;color:var(--ink)}
 /* Mobile vertical scrollbar: native scrolling, quiet track, system high-contrast untouched. */
 @media (max-width:820px) and (forced-colors:none){
   html{--scroll-thumb:#8993a1;--scroll-thumb-hover:#697687}
