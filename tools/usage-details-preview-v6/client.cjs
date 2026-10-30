@@ -168,24 +168,31 @@ module.exports = function usageGaugeApp(S, logos, notices, C) {
     if(diff===1&&hm==='00:00')return t('오늘 밤 12시','midnight tonight');
     if(diff===0)return t('오늘 '+hm,'today '+hm);if(diff===1)return t('내일 '+hm,'tomorrow '+hm);
     try{return new Intl.DateTimeFormat(locale(),{timeZone:tz,month:'short',day:'numeric',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(ms));}catch{return shortAt(v);}}
-  // long conversations still in use: the only thing worth doing right now, named so it can be acted on
+  // 한도를 쓴 양 (요금 기준 추정): the same price ratios as the AI habit check (habit-check.cjs PRICES). Cache writes count
+  // 1x for OpenAI and Grok (no write surcharge), Claude 1.25x or 2x as the habit check measured (S.localWeights). Sources
+  // whose logs do not split the cache (Grok CLI, Antigravity) are left out, like in the habit check.
+  const NOCACHE=new Set(['grok_cli_local','antigravity_local']);
+  const priceOf=(d,m)=>{const s=String(m||'');if(/claude|opus|sonnet|haiku/i.test(s)||((!s||s==='unknown')&&/^claude/.test(d.id)))return {out:5,read:0.1,claude:true};
+    return /^gpt-5/i.test(s)?{out:8,read:0.1}:/^grok-4/i.test(s)?{out:5,read:0.25}:/^grok/i.test(s)||((!s||s==='unknown')&&d.provider==='grok')?{out:4,read:0.25}:{out:4,read:0.1};};
+  const localW=d=>(S.localWeights&&S.localWeights[d.id])||{};
+  const writeOf=d=>C.number(localW(d).write)?localW(d).write:/^claude/.test(d.id)?1.25:1;
+  const n0=v=>C.number(v)?v:0;
+  const usedOf=(d,x,p)=>n0(x.input)+n0(x.cacheCreate)*(p.claude?writeOf(d):1)+n0(x.cacheRead)*p.read+n0(x.output)*p.out;
+  // the source's mix in a window (from its model rows), for rows that carry no model (projects, days)
+  function mixOf(d,from,to){const rows=((d.breakdowns&&d.breakdowns.model)||[]).filter(r=>r&&r.totals&&r.date>=from&&r.date<=to);let o=0,ow=0,c=0,cw=0,cl=0;
+    for(const r of rows){const p=priceOf(d,r.id);o+=n0(r.totals.output);ow+=n0(r.totals.output)*p.out;c+=n0(r.totals.cacheRead);cw+=n0(r.totals.cacheRead)*p.read;if(p.claude)cl+=n0(r.totals.total);}
+    const base=priceOf(d,'');return {out:o?ow/o:base.out,read:c?cw/c:base.read,claude:rows.length?cl*2>=rows.reduce((n,r)=>n+n0(r.totals.total),0):!!base.claude};}
+  function usedIn(d,from,to){const rows=((d.breakdowns&&d.breakdowns.model)||[]).filter(r=>r&&r.totals&&r.date>=from&&r.date<=to);if(rows.length)return rows.reduce((n,r)=>n+usedOf(d,r.totals,priceOf(d,r.id)),0);
+    const days=(d.days||[]).filter(x=>x.date>=from&&x.date<=to&&C.number(x.tokens));if(!days.length)return null;const p=mixOf(d,from,to);return days.reduce((n,x)=>n+usedOf(d,x,p),0);}
+  // cache lifetime per source: what the habit check measured, else 60 minutes for Claude and 10 for the others (measured on this Mac, 2026-10-30)
+  const lifeOf=d=>C.number(localW(d).life)?localW(d).life:/^claude/.test(d.id)?60:10;
+  // to do now: a long conversation (over 400K) used in the last 6 hours whose cache has probably expired; the next message
+  // there writes the whole conversation to cache again. Conversations with a living cache are fine and are not listed.
   function liveLong(){const now=Date.now(),out=[],seen=new Set();
-    for(const d of (S.datasets||[]).filter(d=>d.efficiency&&d.efficiency.status==='observed'))for(const x of d.efficiency.recentSessions||[]){const ago=now-Date.parse(x.lastAt);if(x.lastContext>=400000&&ago>=0&&ago<6*3600e3&&!(S.localHelpers||[]).includes(x.session))out.push({d,x,ago});}
+    for(const d of (S.datasets||[]).filter(d=>d.efficiency&&d.efficiency.status==='observed'&&!NOCACHE.has(d.id)))for(const x of d.efficiency.recentSessions||[]){const ago=now-Date.parse(x.lastAt);if(x.lastContext>=400000&&ago>=lifeOf(d)*60000&&ago<6*3600e3&&!(S.localHelpers||[]).includes(x.session))out.push({d,x,ago});}
     return out.sort((a,b)=>b.x.lastContext-a.x.lastContext).filter(o=>{if(seen.has(o.x.session))return false;seen.add(o.x.session);return true;}).slice(0,3);}
   const convName=x=>{const n=S.localNames&&S.localNames[x.session];if(n)return '"'+n+'"';const p=x.project&&x.project!=='unknown'?nameOf(x.project):'';return p?t(p+' 대화',p+' conversation'):t('이름 없는 대화','Untitled conversation');};
   const agoText=ms=>{const m=Math.round(ms/60000);return m<1?t('방금 전','just now'):t(gapText(m)+' 전',gapText(m)+' ago');};
-  function habits(){const out=[],obs=(S.datasets||[]).filter(d=>d.efficiency&&d.efficiency.status==='observed'&&d.efficiency.requests>=50);
-    const longs=obs.filter(d=>{const e=d.efficiency;return e.longSessions>=3&&pct(e.longSessionContextTokens,e.contextTokens)>=50;}).sort((a,b)=>b.efficiency.contextTokens-a.efficiency.contextTokens);
-    if(longs.length){const e=longs[0].efficiency;out.push(t('긴 대화(40만 토큰 넘음) '+e.longSessions+'개가 '+srcName(longs[0])+' 토큰의 '+pct(e.longSessionContextTokens,e.contextTokens)+'%',e.longSessions+' long conversations (over 400K) carry '+pct(e.longSessionContextTokens,e.contextTokens)+'% of '+srcName(longs[0])+' tokens'));}
-    const brk=obs.filter(d=>{const e=d.efficiency;return e.expiryMeaning==='history_rewritten_after_cache_expired'&&e.cacheExpiries>=5&&pct(e.expiryRewriteTokens,e.freshTokens)>=15;}).sort((a,b)=>pct(b.efficiency.expiryRewriteTokens,b.efficiency.freshTokens)-pct(a.efficiency.expiryRewriteTokens,a.efficiency.freshTokens));
-    if(brk.length){const e=brk[0].efficiency;out.push(t('쉬었다 이어 쓴 대화가 '+srcName(brk[0])+' 새 토큰의 '+pct(e.expiryRewriteTokens,e.freshTokens)+'%',resumeAfterBreak(brk[0],e)));}
-    const sw=obs.filter(d=>{const e=d.efficiency;return e.modelSwitches>=3&&e.modelSwitchRewriteTokens>0;}).sort((a,b)=>b.efficiency.modelSwitchRewriteTokens-a.efficiency.modelSwitchRewriteTokens);
-    if(sw.length){const e=sw[0].efficiency;out.push(t('대화 중간에 모델을 바꿔 처음부터 다시 저장한 게 '+srcName(sw[0])+'에서 '+e.modelSwitches+'번('+compact(e.modelSwitchRewriteTokens)+' 토큰)','Switching models mid-conversation re-wrote the history '+e.modelSwitches+' times in '+srcName(sw[0])+' ('+compact(e.modelSwitchRewriteTokens)+' tokens)'));}
-    return out;}
-  // Aside summarizes a conversation only near the top of the model's window: say so when its conversations actually get that long
-  function asideCompactionRow(){const a=S.localAside,d=(S.datasets||[]).find(x=>x.id==='claude_aside_local'),e=d&&d.efficiency;if(!a||!e||e.status!=='observed')return '';const peak=e.peakContext||0;if(peak<600000||(a.enabled&&a.thresholdPercent<=50))return '';
-    return '<li><div class="today-row-main"><span class="today-row-title">'+(a.enabled?t('Aside는 대화가 모델 한도의 '+a.thresholdPercent+'%가 돼야 압축해요','Aside compacts a conversation only at '+a.thresholdPercent+'% of the model window'):t('Aside 대화 압축이 꺼져 있어요','Aside conversation compaction is off'))+'</span><span class="today-act">'+t('Aside 압축 기준 낮추기','Lower Aside\'s compaction point')+'</span></div><p class="today-why">'+t('그래서 가장 긴 대화가 '+compact(peak)+' 토큰까지 커졌어요. 40만 토큰쯤에서 압축하면 그 뒤 요청마다 다시 읽는 양이 크게 줄어요. 대신 압축할 때 앞 내용이 요약돼요.','So the longest conversation reached '+compact(peak)+' tokens. Compacting near 400K cuts what every later request re-reads; earlier turns are summarized instead.')+'</p></li>';}
-  const resumeAfterBreak=(d,e)=>'Resuming after breaks is '+pct(e.expiryRewriteTokens,e.freshTokens)+'% of new tokens in '+srcName(d);
   // this week's heaviest projects and models: new tokens (re-read history excluded), one row per source, sources never added
   const SRC_SHORT={claude_cli_local:'Claude Code',claude_aside_local:'Aside',codex_cli_local:['Codex 앱','Codex app'],codex_aside_local:['Aside Codex','Aside Codex'],grok_cli_local:'Grok CLI',grok_aside_local:['Aside Grok','Aside Grok'],antigravity_local:'Antigravity',aside_aside_local:'Aside'};
   const srcShortName=d=>{const v=SRC_SHORT[d.id];return Array.isArray(v)?t(v[0],v[1]):v||sourceShort(d);};
@@ -195,25 +202,27 @@ module.exports = function usageGaugeApp(S, logos, notices, C) {
     m=s.match(/^(grok|gemini)-(.+)$/i);if(m)return m[1][0].toUpperCase()+m[1].slice(1)+' '+m[2];return s;}
   const tone=(d,model)=>{const s=String(model||'')+' '+d.provider;return /claude|opus|sonnet|haiku/i.test(String(model||''))?'plum':/gpt|codex|openai/i.test(String(model||''))?'slate':/grok/i.test(s)?'sand':/gemini|antigravity/i.test(s)?'peri':d.provider==='claude'?'plum':d.provider==='codex'?'slate':'plum';};
   function weekRows(dim){const to=S.period&&S.period.to;if(!to)return [];const from=new Date(Date.parse(to+'T00:00:00Z')-6*864e5).toISOString().slice(0,10),out=[];
-    for(const d of (S.datasets||[])){if(d.scope==='account'||recovered(d)||!d.breakdowns)continue;const m=new Map();
-      for(const r of d.breakdowns[dim]||[]){if(!r||r.date<from||r.date>to||!r.totals||!C.number(r.totals.total))continue;const id=String(r.id||'unknown').replace(/^(project|session) /,'');const o=m.get(id)||{fresh:0,total:0};o.total+=r.totals.total;o.fresh+=r.totals.total-(C.number(r.totals.cacheRead)?r.totals.cacheRead:0);m.set(id,o);}
-      for(const [id,o] of m)if(o.fresh>0)out.push({d,id,...o});}
-    return out.sort((a,b)=>b.fresh-a.fresh).slice(0,6);}
-  function weekList(title,rows,nameFn){if(!rows.length)return '';const max=rows[0].fresh;
-    return '<div class="week-col"><h3 class="week-title">'+title+'</h3><ol class="week-list">'+rows.map((r,i)=>{const ratio=r.total/Math.max(1,r.fresh);
-      return '<li><span class="week-rank num">'+(i+1)+'</span><span class="week-name">'+esc(nameFn(r))+'<small>'+esc(srcShortName(r.d))+'</small></span><span class="week-value num">'+compact(r.fresh)+'</span><span class="week-bar"><i class="tone-'+tone(r.d,r.id)+'" style="width:'+Math.max(2,Math.round(r.fresh/max*100))+'%"></i></span>'
-        +(ratio>=50&&r.total>=1e8?'<span class="week-note">'+t('다시 읽은 양 포함 '+compact(r.total)+', 새로 처리한 양의 '+Math.round(ratio)+'배','With re-reads '+compact(r.total)+', '+Math.round(ratio)+'x the new tokens')+'</span>':'')+'</li>';}).join('')+'</ol></div>';}
+    for(const d of (S.datasets||[])){if(d.scope==='account'||recovered(d)||!d.breakdowns||NOCACHE.has(d.id))continue;const m=new Map(),mix=mixOf(d,from,to);
+      for(const r of d.breakdowns[dim]||[]){if(!r||r.date<from||r.date>to||!r.totals||!C.number(r.totals.total))continue;const id=String(r.id||'unknown').replace(/^(project|session) /,'');m.set(id,(m.get(id)||0)+usedOf(d,r.totals,dim==='model'?priceOf(d,r.id):mix));}
+      for(const [id,used] of m)if(used>0)out.push({d,id,used});}
+    return out.sort((a,b)=>b.used-a.used).slice(0,6);}
+  function weekList(title,rows,nameFn){if(!rows.length)return '';const max=rows[0].used;
+    return '<div class="week-col"><h3 class="week-title">'+title+'</h3><ol class="week-list">'+rows.map((r,i)=>'<li><span class="week-rank num">'+(i+1)+'</span><span class="week-name">'+esc(nameFn(r))+'<small>'+esc(srcShortName(r.d))+'</small></span><span class="week-value num">'+compact(r.used)+'</span><span class="week-bar"><i class="tone-'+tone(r.d,r.id)+'" style="width:'+Math.max(2,Math.round(r.used/max*100))+'%"></i></span></li>').join('')+'</ol></div>';}
+  const estOnce=()=>S.localHabit?'':t(', 요금 기준 추정',', estimated from API prices');
   function weekHTML(){const p=weekList(t('프로젝트','Projects'),weekRows('project'),r=>r.id==='unknown'?t('프로젝트 미지정','No project'):nameOf(r.id)),
       m=weekList(t('모델','Models'),weekRows('model'),r=>r.id==='unknown'||!r.id?providerName(r.d.provider)+t(' (모델 기록 없음)',' (model not recorded)'):modelName(r.id));
-    return p||m?'<div class="today-block week"><h2 class="today-head">'+t('이번 주 많이 쓴 곳','Where it went this week')+'<span>'+t('새로 처리한 토큰, 지난 7일, 출처끼리 더하지 않음','new tokens, last 7 days, sources not added')+'</span></h2><div class="week-grid">'+p+m+'</div></div>':'';}
+    return p||m?'<div class="today-block week"><h2 class="today-head">'+t('이번 주 많이 쓴 곳','Where it went this week')+'<span>'+t('한도를 쓴 양, 지난 7일, 출처끼리 더하지 않음','limit used, last 7 days, sources not added')+estOnce()+'</span></h2><div class="week-grid">'+p+m+'</div></div>':'';}
   // AI habit check: rules decide, a small model words it; the result is written by the local refresh, never fetched by this page
   function habitHTML(){const h=S.localHabit,run='<a class="habit-run" href="usagegauge://habit-check">'+t(h?'다시 진단':'AI로 진단하기',h?'Run again':'Run AI check')+'</a>';
     const meta=h?'<span>'+esc(shortAt(h.at))+(h.model?t(', '+h.model+'가 정리',', worded by '+h.model):t(', 규칙 문장만',', rule texts only'))+(h.dropped?t(', 기준에 안 맞는 문장 '+h.dropped+'개 뺌',', '+h.dropped+' unsupported sentences removed'):'')+'</span>':'';
     // items: only cache lost by mechanics (cold restart, model switch, compaction), ranked by 한도를 쓴 양; info: neutral lines, never advice
-    const info=h&&h.info&&h.info.length?'<h3 class="habit-info-head">'+t('참고: 출처별로 한도를 쓴 양과 캐시 적중','For reference: load and cache hits by source')+'</h3><ul class="today-rows habit-info">'+h.info.map(i=>'<li><div class="today-row-main"><span class="today-row-title">'+esc(i.title)+'</span></div><p class="today-why">'+esc(i.why)+'</p></li>').join('')+'</ul>'+(h.basis?'<p class="habit-basis">'+esc(h.basis)+'</p>':''):'';
+    const tag=v=>v?'<span class="habit-tag'+(v==='추정'?' est':'')+'">'+esc(v==='추정'?t('추정','estimate'):t('기록으로 확인함','seen in records'))+'</span>':'';
+    const table=h&&h.table&&h.table.length?'<table class="habit-table"><thead><tr><th>'+t('출처','Source')+'</th><th class="num">'+t('한도를 쓴 양','Limit used')+'</th><th class="num">'+t('캐시 적중','Cache hits')+'</th><th>'+t('모델별로 한도를 쓴 양','Limit used by model')+'</th></tr></thead><tbody>'
+      +h.table.map(r=>'<tr><td>'+esc(r.source)+'</td><td class="num">'+esc(r.used)+'</td><td class="num">'+esc(r.hit)+'</td><td>'+esc(r.models)+'</td></tr>').join('')+'</tbody></table>':'';
+    const info=h&&(table||(h.notes&&h.notes.length))?'<h3 class="habit-info-head">'+t('참고','For reference')+'</h3>'+table+(h.notes&&h.notes.length?'<ul class="habit-notes">'+h.notes.map(n=>'<li>'+esc(n)+'</li>').join('')+'</ul>':'')+(h.basis?'<p class="habit-basis">'+esc(h.basis)+'</p>':''):'';
     const body=!h?'<p class="today-none">'+t('누르면 지난 30일 기록에서 캐시를 잃은 경우(오래 쉰 뒤 다시 저장, 대화 중 모델 전환, 자동 압축)만 찾아 한도를 많이 쓴 순으로 보여 주고, Haiku(없으면 Luna)가 문장을 다듬어요. 집계값만 보내고 대화 내용은 보내지 않아요.','Finds only lost cache in the last 30 days (cold restarts, model switches, compaction), ranked by estimated limit load; Haiku (or Luna) words it. Sends aggregates only, never conversation content.')+'</p>'
       :(!h.items.length?'<p class="today-none">'+t('캐시를 잃어 한도를 많이 쓴 경우는 없어요.','No large load from lost cache.')+'</p>'
-      :'<ul class="today-rows habit-rows">'+h.items.map(i=>'<li><div class="today-row-main"><span class="today-row-title">'+esc(i.title)+'</span></div><p class="today-why">'+esc(i.why)+'</p><p class="habit-how">'+esc(i.how)+'</p></li>').join('')+'</ul>')+info;
+      :'<ul class="today-rows habit-rows">'+h.items.map(i=>'<li><div class="today-row-main"><span class="today-row-title">'+esc(i.title)+'</span>'+tag(i.evidence)+'</div><p class="today-why">'+esc(i.why)+'</p><p class="habit-how">'+esc(i.how)+'</p></li>').join('')+'</ul>')+info;
     return '<div class="today-block"><h2 class="today-head">'+t('AI 습관 진단','AI habit check')+meta+run+'</h2><p class="habit-wait" hidden>'+t('진단 중이에요. 1분쯤 뒤 이 페이지가 저절로 새로고침돼요. 처음이면 브라우저가 UsageGauge를 열지 물어봐요.','Checking. This page reloads in about a minute. The first time, the browser asks to open UsageGauge.')+'</p>'+body+'</div>';}
   function todayHTML(){const now=Date.now();
     const lims=(S.limits||[]).filter(l=>l.status==='observed'&&remOf(l)!==null&&!(l.provider==='antigravity'&&l.window!=='7d')).sort((a,b)=>(remOf(a)<=0)-(remOf(b)<=0)||(Date.parse(a.resetAt)||9e15)-(Date.parse(b.resetAt)||9e15));
@@ -221,18 +230,16 @@ module.exports = function usageGaugeApp(S, logos, notices, C) {
     const chip=l=>{const rem=remOf(l),w=when(l.resetAt);if(rem<=0)return '<span class="today-chip out">'+esc(limPlain(l))+' '+t('못 씀','used up')+(w?' <small>'+esc(w)+t('까지','')+'</small>':'')+'</span>';
       return '<span class="today-chip'+(rem<=20?' low':'')+'">'+esc(limPlain(l))+' <b class="num">'+rem+'%</b>'+(w?' <small>'+esc(w)+'</small>':'')+'</span>';};
     const live=liveLong();
-    const extraRow=asideCompactionRow();
-    const rows=live.length||extraRow?'<ul class="today-rows">'+live.map(o=>'<li><div class="today-row-main"><span class="today-row-title">'+esc(convName(o.x))+' <span class="num">'+compact(o.x.lastContext)+t(' 토큰',' tokens')+'</span></span><span class="today-act">'+t('다음 작업은 새 대화에서','Next task in a new conversation')+'</span></div><p class="today-why">'+esc(srcName(o.d))+', '+agoText(o.ago)+'. '+t('여기에 한 번 더 물으면 '+compact(o.x.lastContext)+' 토큰을 처음부터 다시 읽어요.','One more message here re-reads all '+compact(o.x.lastContext)+' tokens.')+'</p></li>').join('')+extraRow+'</ul>'
-      :'<p class="today-none">'+t('지금 할 일 없어요. 40만 토큰 넘게 이어 쓰는 대화가 없어요.','Nothing to do now: no conversation in use is over 400K tokens.')+'</p>';
-    const sum7=(d,from,to)=>{const r=d.days.slice(from,to).filter(x=>C.number(x.tokens));return r.length?r.reduce((n,x)=>n+x.tokens,0):null;};
-    const trend=(S.datasets||[]).filter(d=>d.id!=='aside_unattributed'&&Array.isArray(d.days)&&d.days.length>=14).map(d=>({d,now:sum7(d,-7),before:sum7(d,-14,-7)})).filter(x=>x.now>0).sort((a,b)=>b.now-a.now).slice(0,3);
+    const rows=live.length?'<ul class="today-rows">'+live.map(o=>{const life=lifeOf(o.d),w=o.x.lastContext*(/^claude/.test(o.d.id)?writeOf(o.d):1);return '<li><div class="today-row-main"><span class="today-row-title">'+esc(convName(o.x))+' <span class="num">'+compact(o.x.lastContext)+t(' 토큰',' tokens')+'</span></span><span class="today-act">'+t('다음 작업은 새 대화에서','Next task in a new conversation')+'</span></div><p class="today-why">'+esc(srcName(o.d))+', '+agoText(o.ago)+'. '+t(life+'분이 지나 캐시가 사라졌을 거라 여기에 이어 쓰면 대화 전체를 새로 저장(캐시)해요. 이때 한도를 쓴 양은 '+compact(w)+'이에요.','Past '+life+' minutes the cache has likely expired; one more message here writes the whole conversation to cache again ('+compact(w)+' of limit).')+'</p></li>';}).join('')+'</ul>'
+      :'<p class="today-none">'+t('지금 할 일 없어요. 캐시가 사라진 긴 대화(40만 토큰 넘음)가 없어요.','Nothing to do now: no long conversation (over 400K) has lost its cache.')+'</p>';
+    const sum7=(d,a,b)=>{const r=d.days.slice(a,b);return r.length?usedIn(d,r[0].date,r[r.length-1].date):null;};
+    const trend=(S.datasets||[]).filter(d=>d.id!=='aside_unattributed'&&!NOCACHE.has(d.id)&&Array.isArray(d.days)&&d.days.length>=14).map(d=>({d,now:sum7(d,-7),before:sum7(d,-14,-7)})).filter(x=>x.now>0).sort((a,b)=>b.now-a.now).slice(0,3);
     const trendHTML=trend.map(x=>{let ch;if(!x.before||x.now/x.before>=20)ch=t('크게 늘었어요','sharply up');else{const r=x.now/x.before;ch=r>=1.5?t(r.toFixed(1)+'배',r.toFixed(1)+'x'):(r>=1?'+':'')+Math.round((r-1)*100)+'%';}
       return '<div class="today-trend-item"><strong class="num">'+compact(x.now)+'</strong> <span class="today-change">'+ch+'</span><span class="today-trend-name">'+esc(srcName(x.d))+(x.before!=null?t(' / 지난주 ',' / last week ')+compact(x.before):'')+'</span></div>';}).join('');
-    const hb=habits();
     // limits are on the taskbar widget all the time; the per-service details below keep reset times and accounts
     return ''
       +'<div class="today-block"><h2 class="today-head">'+t('지금 할 일','What to do now')+'</h2>'+rows+'</div>'
-      +habitHTML()+weekHTML()+((trendHTML||hb.length)?'<div class="today-block"><h2 class="today-head">'+t('지난주와 비교','Versus last week')+'<span>'+t('지난 7일과 그 전 7일, 출처끼리 더하지 않음','last 7 days vs the 7 before, sources not added')+'</span></h2>'+(trendHTML?'<div class="today-trend">'+trendHTML+'</div>':'')+(hb.length?'<p class="today-habit">'+t('최근 30일 습관: ','Last 30 days: ')+hb.map(esc).join(t(', ','; '))+'</p>':'')+'</div>':'')
+      +habitHTML()+weekHTML()+(trendHTML?'<div class="today-block"><h2 class="today-head">'+t('지난주와 비교','Versus last week')+'<span>'+t('한도를 쓴 양, 지난 7일과 그 전 7일, 출처끼리 더하지 않음','limit used, last 7 days vs the 7 before, sources not added')+estOnce()+'</span></h2><div class="today-trend">'+trendHTML+'</div></div>':'')
       +'<h2 class="today-detail-head">'+t('서비스별 자세히','By service')+'</h2>';}
 
   function sourceShort(x){const p={codex:'Codex',claude:'Claude',grok:'Grok',antigravity:'Antigravity',aside:'Aside'}[x.provider]||x.provider;return p+(x.scope==='account'?t('(서버)','(server)'):x.source==='aside_messages'?t('(Aside)','(Aside)'):t('(이 PC)','(this PC)'));}

@@ -15,5 +15,10 @@ for(const f of files){const p=path.join(ROOT,f);if(!fs.existsSync(p))continue;sc
 assert.ok(scanned>=8,'scanned the user-string files ('+scanned+')');
 assert.deepEqual(bad,[],'middle dots in user-visible strings:\n'+bad.join('\n'));
 assert.ok(fs.existsSync(path.join(ROOT,'WRITING.md')),'WRITING.md exists');
+// cache use is good (habit check principles): no "다시 읽은 양 포함 …배" or "처음부터 다시 읽어요" judgments left on the page
+const OLD=/다시 읽은 양 포함|새로 처리한 양의|처음부터 다시 읽어요|다시 읽는 양이 크게 줄어요|최근 30일 습관/;const old=[];
+for(const f of ['tools/usage-details-preview-v6/client.cjs','tools/usage-insights-collector/habit-check.cjs'])fs.readFileSync(path.join(ROOT,f),'utf8').split('\n').forEach((l,i)=>{if(OLD.test(strip(l)))old.push(f+':'+(i+1));});
+assert.deepEqual(old,[],'old re-read framing:\n'+old.join('\n'));
+console.log('PASS no re-read multiple judgments in page strings');
 console.log('PASS no middle dots in user-visible strings ('+scanned+' files)');
-console.log('RESULT 1 writing test passed');
+console.log('RESULT 2 writing tests passed');
