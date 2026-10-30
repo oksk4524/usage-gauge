@@ -9,7 +9,8 @@ import Foundation
 //    Antigravity only reacts to agy's own conversation files, at most every 10 min,
 //  - the popover is opened, the Mac wakes / the session becomes active, or the network comes back (not Antigravity:
 //    every agy run starts a CLI of about 300 MB for ~9 s),
-// and never sooner than the service's minimum gap since its last start (the endpoints are rate limited).
+// and never sooner than the service's minimum gap since its last start (the endpoints are rate limited), also when a
+// backoff ends: a retry waits for whichever is later, the end of the backoff or the last start plus the minimum gap.
 // Claude's gap adapts: each 429 doubles it (90 s -> at most 10 min, a longer Retry-After wins), and three successes
 // in a row halve it again, down to 90 s.
 // Transient failures (network, 5xx, CLI timeout) back off exponentially; a Retry-After is respected.
@@ -77,7 +78,11 @@ enum Decision: Equatable { case start, wait(Date), busy }
 enum Sched {
     static func decide(_ s: ProviderState, now: Date, idle: TimeInterval) -> Decision {
         if s.inFlight { return .busy }
-        if let b = s.blockedUntil { return b > now ? .wait(b) : .start }      // backing off: activity can't hurry it
+        if let b = s.blockedUntil {                                          // backing off: activity can't hurry it
+            // the minimum gap since the last start holds on this path too (agy: 10 min after a 30 s timeout)
+            let at = s.lastStart.map { max(b, $0.addingTimeInterval(s.floorGap)) } ?? b
+            return at > now ? .wait(at) : .start
+        }
         guard let last = s.lastStart else { return .start }
         if let g = s.requestGap { let at = last.addingTimeInterval(max(g, s.floorGap)); return at <= now ? .start : .wait(at) }
         let at = last.addingTimeInterval(max(idle, s.floorGap))
@@ -120,6 +125,14 @@ enum Sched {
     // wake / network back / refresh button: a network backoff is pointless now; a 429 block stays
     static func clearNetworkBackoff(_ s: inout ProviderState, now: Date) {
         if s.blockedUntil != nil && !s.rateLimited { s.blockedUntil = now }
+    }
+    // a general trigger (wake, unlock, network back): only the services that follow general triggers lose a network
+    // backoff and get a request; Antigravity keeps its backoff (each run is a big CLI)
+    static func generalTrigger(_ st: inout [Provider: ProviderState], now: Date, reason: String) {
+        for p in RefreshPolicy.followsGeneralTriggers {
+            clearNetworkBackoff(&st[p]!, now: now)
+            request(&st[p]!, gap: RefreshPolicy.minGap(p), reason: reason)
+        }
     }
 }
 

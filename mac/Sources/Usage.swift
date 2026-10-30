@@ -39,6 +39,7 @@ final class Quota {
     var extra: String?
     var accountChanged: Date?
     var windows: [UsageWindow] = []
+    var loginGeneration = 0    // Claude: the account generation the login of this lookup belongs to (see ClaudeIdentity)
 
     static func fail(_ msg: String, transient: Bool = false) -> Quota {
         let q = Quota(); q.error = msg; q.transient = transient; return q
@@ -59,6 +60,13 @@ enum Usage {
     }
     static var codexAuth: String { (envDir("CODEX_HOME", ".codex") as NSString).appendingPathComponent("auth.json") }
     static var claudeCredFile: String { (envDir("CLAUDE_CONFIG_DIR", ".claude") as NSString).appendingPathComponent(".credentials.json") }
+    // Claude Code's settings file: its oauthAccount names the signed-in account (no secrets are read from it)
+    static var claudeConfigFile: String {
+        if let v = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"]?.trimmingCharacters(in: .whitespaces), !v.isEmpty {
+            return (v as NSString).appendingPathComponent(".claude.json")
+        }
+        return (home as NSString).appendingPathComponent(".claude.json")
+    }
     static var grokAuth: String { (envDir("GROK_HOME", ".grok") as NSString).appendingPathComponent("auth.json") }
 
     // ---------- Codex (ChatGPT login of the Codex CLI / app) ----------
@@ -183,8 +191,28 @@ enum Usage {
     }
 
     // The login is read once and kept in memory (never on disk, never logged): /usr/bin/security runs again only when
-    // nothing is kept, the kept token expires within 10 minutes, or the endpoint answered 401.
+    // nothing is kept, the kept token expires within 10 minutes, it was read 15 minutes ago (so a switched account shows
+    // within 15 minutes even while the old token stays valid), the endpoint answered 401, the refresh button was pressed,
+    // or the signed-in account changed. At most about 4 keychain reads an hour while idle; the log counts every read.
     private static var claudeCache = TokenCache()
+    private static var claudeWho = ClaudeIdentity()
+    static func claudeGeneration() -> Int { gate.lock(); defer { gate.unlock() }; return claudeWho.generation }
+    // a non-secret account key (Claude Code's oauthAccount uuid, else the profile's); a change drops the kept login and
+    // starts a new generation, so a lookup that began before it is not shown. Returns whether the account changed.
+    @discardableResult
+    static func noteClaudeAccount(_ key: String?) -> Bool {
+        gate.lock()
+        let changed = claudeWho.note(key)
+        if changed { claudeCache.invalidate() }
+        let g = claudeWho.generation
+        gate.unlock()
+        if changed { Log.write("claude account changed: kept login dropped, lookups from before are not shown (generation \(g))") }
+        return changed
+    }
+    static func claudeConfigAccount() -> String? {
+        guard let j = readJson(claudeConfigFile), let a = j["oauthAccount"] as? [String: Any], let u = str(a, "accountUuid") else { return nil }
+        return "claude:" + u
+    }
     static var securityReads = 0   // how often the keychain was read since launch (the log counts these)
     static func claudeLoginCached(reread: Bool, now: Date = Date()) -> Login? {
         gate.lock()
@@ -199,6 +227,15 @@ enum Usage {
     static func forgetClaudeLogin() { gate.lock(); claudeCache.invalidate(); gate.unlock() }
 
     static func claude() -> Quota {
+        // the signed-in account from Claude Code's settings (a file read, no keychain); a change re-reads the login
+        let cfg = claudeConfigAccount()
+        noteClaudeAccount(cfg)
+        var gen = claudeGeneration()
+        let q = claudeLookup(cfg: cfg, gen: &gen)
+        q.loginGeneration = gen
+        return q
+    }
+    private static func claudeLookup(cfg: String?, gen: inout Int) -> Quota {
         var err: String?; var used: Login?; var sawLogin = false; var calls = 0
         let (st, body) = authedGet("https://api.anthropic.com/api/oauth/usage", "anthropic-beta", "oauth-2025-04-20") {
             calls += 1
@@ -214,6 +251,8 @@ enum Usage {
         if let c = cred, let u = used?.access {
             who = q.ok ? claudeProfile(u, c) : cachedClaudeProfile(c)
         }
+        // no settings file: the profile names the account; a change found here is this lookup's own (new) login
+        if cfg == nil, let k = who?[0] ?? nil, noteClaudeAccount(k) { gen = claudeGeneration() }
         return tag(q, who?[1] ?? nil, who?[0] ?? nil, cred)
     }
     static func claudeResult(_ j: [String: Any]?, _ st: Int, _ err: String?, _ used: Login?) -> Quota {
@@ -535,19 +574,38 @@ enum SecurityTool {
     }
 }
 
-// The rule for keeping Claude's login in memory (pure, unit tested). Only a readable login with a token is kept;
-// a token without its own expiry is read again after an hour.
+// The rule for keeping Claude's login in memory (pure, unit tested). Only a readable login with a token is kept, for at
+// most 15 minutes after it was read (an account switch must not hide behind a still valid token), and never into the
+// last 10 minutes before its own expiry.
 struct TokenCache {
-    static let refreshBefore: TimeInterval = 10 * 60, noExpiryMaxAge: TimeInterval = 3600
+    static let refreshBefore: TimeInterval = 10 * 60, maxAge: TimeInterval = 15 * 60
     private(set) var login: Usage.Login?
     private(set) var readAt: Date?
     func usable(now: Date) -> Usage.Login? {
         guard let l = login, l.error == nil, l.access != nil, let r = readAt else { return nil }
+        if now.timeIntervalSince(r) >= TokenCache.maxAge { return nil }
         if let e = l.expires { return e.timeIntervalSince(now) > TokenCache.refreshBefore ? l : nil }
-        return now.timeIntervalSince(r) < TokenCache.noExpiryMaxAge ? l : nil
+        return l
     }
     mutating func store(_ l: Usage.Login?, now: Date) {
         if let l = l, l.error == nil, l.access != nil { login = l; readAt = now } else { invalidate() }
     }
     mutating func invalidate() { login = nil; readAt = nil }
+}
+
+// Which Claude account is signed in (a non-secret key, never a token) and its generation: the generation goes up when
+// the account changes, and a lookup carries the generation it started in, so its late answer is dropped (pure, tested).
+struct ClaudeIdentity {
+    private(set) var key: String?
+    private(set) var generation = 0
+    // true when a known account changed to another one; an unknown key changes nothing
+    mutating func note(_ k: String?) -> Bool {
+        guard let k = k, !k.isEmpty else { return false }
+        defer { key = k }
+        guard let old = key else { return false }
+        if old.caseInsensitiveCompare(k) == .orderedSame { return false }
+        generation += 1
+        return true
+    }
+    func isCurrent(_ lookupGeneration: Int) -> Bool { lookupGeneration == generation }
 }

@@ -27,15 +27,17 @@ enum Antigravity {
     // returns [Gemini 4 Argon, rest of Antigravity]; or a single "설치 안 됨" row when agy is missing
     static func fetch() -> [Quota] {
         guard let agy = findAgy() else { return notInstalled() }
-        let work = (NSTemporaryDirectory() as NSString).appendingPathComponent("UsageGauge-agy")
+        // a new workspace folder for every run, so a log that names it can only be this run's
+        let work = AgyLogs.newWorkDir()
         try? FileManager.default.createDirectory(atPath: work, withIntermediateDirectories: true)
         // agy's own log of this run goes to our folder (official --log-file flag) and is deleted right after
-        let runLog = (work as NSString).appendingPathComponent("agy-\(getpid())-\(Int(Date().timeIntervalSince1970)).log")
+        let runLog = (work as NSString).appendingPathComponent("agy-run.log")
         let started = Date()
         let (fail, parsed) = runCli(agy, ["-p", "/usage", "--output-format", "json", "--print-timeout", "25s", "--log-file", runLog], work)
         try? FileManager.default.removeItem(atPath: runLog)
         let removed = AgyLogs.cleanUp(dir: AgyLogs.dir, workDir: work, runStart: started, now: Date())
-        if removed.run + removed.old > 0 { Log.write("agy logs: removed \(removed.run) from this run, \(removed.old) older than 7 days") }
+        if removed > 0 { Log.write("agy logs: removed \(removed) from this run") }
+        try? FileManager.default.removeItem(atPath: work)   // our own per-run folder
         func both(_ m: String, transient: Bool = false) -> [Quota] {
             let a = Quota.fail(m, transient: transient), b = Quota.fail(m, transient: transient)
             a.name = geminiName; b.name = otherName; return [a, b]
@@ -149,34 +151,52 @@ enum Antigravity {
 }
 
 // agy writes ~/.gemini/antigravity-cli/log/cli-YYYYMMDD_HHMMSS.log for every run. Ours go to --log-file, so normally
-// nothing lands there; if one does anyway (an agy that ignores the flag), it is removed when it was created during
-// our run and names our work folder as its workspace (read from its first 64 KB). Separately, agy CLI logs older than 7 days are pruned.
-// Only that folder, only files named like agy's CLI logs; never other agy files.
+// nothing lands there; if one does anyway (an agy that ignores the flag), it is removed only when it is provably ours:
+// created during our run AND a workspace field in its first 64 KB is exactly this run's own folder
+// ($TMPDIR/UsageGauge-agy/<uuid>, a new uuid every run). Logs of every other agy run (the user's own, an IDE's) are
+// never touched, whatever their age; only that folder, only files named like agy's CLI logs.
 enum AgyLogs {
     static var dir: String { (Usage.home as NSString).appendingPathComponent(".gemini/antigravity-cli/log") }
-    static let keepDays: TimeInterval = 7 * 24 * 3600
+    static var root: String { (NSTemporaryDirectory() as NSString).appendingPathComponent("UsageGauge-agy") }
+    static func newWorkDir() -> String { (root as NSString).appendingPathComponent(UUID().uuidString) }
 
     static func isCliLog(_ name: String) -> Bool {
         name.range(of: "^cli-[0-9]{8}_[0-9]{6}(\\.[0-9]+)?\\.log$", options: .regularExpression) != nil
     }
-    // which files to delete: (made by this run, older than 7 days). `head` returns the first bytes of a file.
-    static func pick(_ files: [(name: String, created: Date, modified: Date)], workDir: String, runStart: Date, now: Date,
-                     head: (String) -> String) -> (run: [String], old: [String]) {
-        var run: [String] = [], old: [String] = []
-        let marks = [workDir, "/private" + workDir]
-        for f in files where isCliLog(f.name) {
-            if f.modified < now.addingTimeInterval(-keepDays) { old.append(f.name); continue }
-            if f.created >= runStart.addingTimeInterval(-2) && f.created <= now.addingTimeInterval(2) {
-                let h = head(f.name)
-                if marks.contains(where: { h.contains("workspace " + $0) || h.contains("workspaceDirs=[" + $0) }) { run.append(f.name) }
+    // the workspace paths a log names: "... for workspace <path>" (to the end of the line) and "workspaceDirs=[a b]"
+    static func workspaces(_ head: String) -> [String] {
+        var out: [String] = []
+        for line in head.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            let l = String(line)
+            if let r = l.range(of: "workspace /") {
+                out.append(String(l[l.index(before: r.upperBound)...]).trimmingCharacters(in: .whitespaces))
+            }
+            var rest = l[...]
+            while let r = rest.range(of: "workspaceDirs=[") {
+                let after = rest[r.upperBound...]
+                guard let close = after.firstIndex(of: "]") else { break }
+                out += after[..<close].split(whereSeparator: { $0 == " " || $0 == "," }).map(String.init)
+                rest = after[close...]
             }
         }
-        return (run, old)
+        return out
+    }
+    // which files to delete: made by this run. `head` returns the first bytes of a file.
+    static func pick(_ files: [(name: String, created: Date, modified: Date)], workDir: String, runStart: Date, now: Date,
+                     head: (String) -> String) -> [String] {
+        let w = workDir.hasSuffix("/") ? String(workDir.dropLast()) : workDir
+        let marks: Set<String> = [w, w.hasPrefix("/private/") ? String(w.dropFirst(8)) : "/private" + w]
+        var run: [String] = []
+        for f in files where isCliLog(f.name) {
+            guard f.created >= runStart.addingTimeInterval(-2) && f.created <= now.addingTimeInterval(2) else { continue }
+            if workspaces(head(f.name)).contains(where: { marks.contains($0.hasSuffix("/") ? String($0.dropLast()) : $0) }) { run.append(f.name) }
+        }
+        return run
     }
     @discardableResult
-    static func cleanUp(dir: String, workDir: String, runStart: Date, now: Date) -> (run: Int, old: Int) {
+    static func cleanUp(dir: String, workDir: String, runStart: Date, now: Date) -> Int {
         let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return (0, 0) }
+        guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return 0 }
         var files: [(name: String, created: Date, modified: Date)] = []
         for n in names where isCliLog(n) {
             let path = (dir as NSString).appendingPathComponent(n)
@@ -189,9 +209,8 @@ enum AgyLogs {
             defer { try? h.close() }
             return String(decoding: h.readData(ofLength: 65536), as: UTF8.self)
         }
-        var run = 0, old = 0
-        for n in picked.run where (try? fm.removeItem(atPath: (dir as NSString).appendingPathComponent(n))) != nil { run += 1 }
-        for n in picked.old where (try? fm.removeItem(atPath: (dir as NSString).appendingPathComponent(n))) != nil { old += 1 }
-        return (run, old)
+        var run = 0
+        for n in picked where (try? fm.removeItem(atPath: (dir as NSString).appendingPathComponent(n))) != nil { run += 1 }
+        return run
     }
 }
