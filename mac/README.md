@@ -19,7 +19,7 @@ mac/build/UsageGauge.app/Contents/MacOS/UsageGauge --probe   # 한 번 조회해
 | Grok | `~/.grok/auth.json` (`GROK_HOME`) |
 | Antigravity | `agy -p /usage` (없으면 "설치 안 됨") |
 
-윈도우 위젯과 같은 규칙입니다. 조회는 GET만 하고, 토큰 갱신 POST나 로그인 정보 쓰기는 하지 않습니다. 401과 403을 구분하고, 로그인 계정이 바뀌면 이전 계정 값은 버립니다. Claude 키체인 항목을 처음 읽을 때 macOS가 허용 창을 띄울 수 있습니다. 허용 창에서 거부하면 "새로고침"을 누를 때까지 다시 묻지 않습니다.
+윈도우 위젯과 같은 규칙입니다. 조회는 GET만 하고, 토큰 갱신 POST나 로그인 정보 쓰기는 하지 않습니다. 401과 403을 구분하고, 로그인 계정이 바뀌면 이전 계정 값은 버립니다. Claude 키체인 항목은 `/usr/bin/security find-generic-password -s "Claude Code-credentials" -w`로 읽습니다. 이 도구는 Claude Code가 쓰는 길이라 항목의 허용 목록에 이미 있어서, 앱을 다시 빌드해도 macOS 허용 창이 뜨지 않습니다. 비밀값은 메모리에만 두고 기록하지 않으며, 10초 안에 답이 없거나 도구가 실패할 때만 Security API로 읽습니다(이때는 허용 창이 뜰 수 있고, 거부하면 "새로고침"을 누를 때까지 다시 묻지 않습니다).
 
 ## 사용량 상세 화면 (대시보드)
 
