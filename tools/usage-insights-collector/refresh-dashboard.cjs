@@ -5,8 +5,9 @@
 //   %LOCALAPPDATA%\UsageGauge\dashboard\app\...        copied code (this file lives in app\tools\usage-insights-collector)
 //   %LOCALAPPDATA%\UsageGauge\dashboard\data\           inputs and outputs (config.json, saved account readings, snapshot)
 //   %LOCALAPPDATA%\UsageGauge\dashboard\usage-gauge.html the page the widget opens
+// On macOS the same layout lives under ~/Library/Application Support/UsageGauge (created by mac/install-dashboard.sh).
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os');
-const HOME=path.join(process.env.LOCALAPPDATA||path.join(os.homedir(),'AppData','Local'),'UsageGauge');
+const HOME=process.platform==='darwin'?path.join(os.homedir(),'Library','Application Support','UsageGauge'):path.join(process.env.LOCALAPPDATA||path.join(os.homedir(),'AppData','Local'),'UsageGauge');
 const DASH=path.join(HOME,'dashboard'),DATA=path.join(DASH,'data'),APP=path.resolve(__dirname,'..','..');
 const LOCK=path.join(DATA,'refresh.lock'),LOG=path.join(DATA,'refresh.log');
 
@@ -44,7 +45,7 @@ async function main(){
     if(want.size){const {DatabaseSync}=require('node:sqlite'),crypto=require('node:crypto'),key=c.loadIdKey(path.join(HOME,'collector-id-key'));
       const db=new DatabaseSync(path.join(os.homedir(),'.aside','u','0','state.db'),{readOnly:true});
       try{for(const s of db.prepare('SELECT id,title,parent_id FROM sessions WHERE incognito IS NOT 1').all()){const h=crypto.createHmac('sha256',key).update(String(s.id)).digest('hex').slice(0,16);if(want.has(h)&&s.parent_id)helpers.push(h);
-        if(want.has(h)&&typeof s.title==='string'){const tt=s.title.replace(/[\u0000-\u001f<>"|?*]/g,' ').replace(/\s+/g,' ').trim().slice(0,80);if(tt)names[h]=tt;}}}finally{db.close();}}}catch{}writeAtomic(path.join(DATA,'local-names.json'),JSON.stringify({purpose:'this_pc_dashboard_only',names}));
+        if(want.has(h)&&typeof s.title==='string'){const tt=s.title.replace(/[\u0000-\u001f<>"|?*]/g,' ').replace(/\s+/g,' ').trim().slice(0,80);if(tt)names[h]=tt;}}}finally{db.close();}}}catch{}writeAtomic(path.join(DATA,'local-names.json'),JSON.stringify({purpose:'this_pc_dashboard_only',names,helpers}));   // helpers: the macOS menu bar skips them in "지금 할 일", like the page
   for(const k of Object.keys(names))if(typeof names[k]==='string')names[k]=names[k].replace(/[\u00b7\u318d\u2022]/g,'\u2219');
   const tpl=fs.readFileSync(path.join(APP,'tools','usage-details-preview-v6','template.html'),'utf8'),aside=asideCompaction();
   const writePage=habit=>writeAtomic(path.join(DASH,'usage-gauge.html'),build(tpl,{...snap,localNames:names,localHelpers:helpers,localAside:aside,localHabit:habit}));
