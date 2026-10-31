@@ -242,6 +242,9 @@ enum Usage {
             let l = claudeLoginCached(reread: calls > 1)   // the second call is authedGet's retry after a 401
             if l != nil { sawLogin = true }
             guard let login = l, login.error == nil, let a = login.access else { err = l?.error; return nil }
+            // a token whose own expiry has passed only earns a 401, and repeated 401s end in 429 for an hour:
+            // don't ask until Claude Code has refreshed it (the keychain is re-read on every lookup meanwhile)
+            if let e = login.expires, e <= Date() { err = "토큰 갱신 대기: Claude Code를 한 번 열어 주세요"; return nil }
             used = login; return a
         }
         if st < 0 && err == nil && !sawLogin { return .noLoginFound() }
@@ -474,6 +477,14 @@ enum ClaudeKeychain {
     static var usedFallback = false   // tests and the log line: whether the last read needed the Security API
 
     static func read() -> Result {
+        // Claude Code files its login under the user's account name. A run with no USER set (an AI shell) can leave a
+        // second item with the same service name under "unknown" that holds only MCP logins, and asking for the
+        // service alone returns whichever one macOS lists first (it changes when an item is updated). So this user's
+        // item comes first; the service-only lookup stays as the fallback.
+        let me = NSUserName()
+        if !me.isEmpty, case .found(let d) = SecurityTool.findGenericPassword(service: service, account: me), hasLogin(d) {
+            usedFallback = false; return .found(d)
+        }
         switch SecurityTool.findGenericPassword(service: service) {
         case .found(let d): usedFallback = false; return .found(d)
         case .notFound: usedFallback = false; return .notFound
@@ -483,7 +494,10 @@ enum ClaudeKeychain {
             return readWithAPI()
         }
     }
-static func exists() -> Bool {
+static func hasLogin(_ d: Data) -> Bool {
+        ((try? JSONSerialization.jsonObject(with: d)) as? [String: Any])?["claudeAiOauth"] is [String: Any]
+    }
+    static func exists() -> Bool {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                 kSecAttrService as String: service,
                                 kSecMatchLimit as String: kSecMatchLimitOne,
