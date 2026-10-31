@@ -70,6 +70,7 @@ if !ClaudeKeychain.exists() {
 check(SecurityTool.decode(Data("{\"a\":1}\n".utf8)) == Data("{\"a\":1}".utf8), "security -w: trailing newline dropped")
 check(SecurityTool.decode(Data("7b7d\n".utf8)) == Data("{}".utf8), "security -w: hex output decoded")
 check(SecurityTool.decode(Data("\n".utf8)) == nil, "security -w: empty output is no secret")
+check(ClaudeKeychain.hasLogin(Data("{\"claudeAiOauth\":{\"accessToken\":\"a\"}}".utf8)) && !ClaudeKeychain.hasLogin(Data("{\"mcpOAuth\":{}}".utf8)), "claude: an item with only MCP logins is not the Claude login")
 if case .notFound = SecurityTool.findGenericPassword(service: "UsageGauge test item that does not exist \(UUID().uuidString)") { check(true, "security: missing item is notFound (exit 44)") } else { check(false, "security: missing item is notFound (exit 44)") }
 let t0 = Date()
 let slow = SecurityTool.run("/bin/sleep", ["5"], timeout: 0.5)
