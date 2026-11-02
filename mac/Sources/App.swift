@@ -294,6 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let r = rings
         model.gauges = loaded ? zip(r, Design.logoKeys).map { Design.gauge($0, logo: $1) }
             : Design.logoKeys.map { k in let q = Quota(); q.error = "확인 전"; return Design.gauge(q, logo: k) }
+        model.rows = Design.rows(main: qs, ag: ag, loaded: loaded)
         model.header = Design.header(lastCheck: lastConfirmed, main: qs)
         model.todo = Design.loadTodo()
         model.busy = busy
@@ -405,6 +406,7 @@ func renderPreview(_ dir: String) {
     let rings = Design.ringQuotas(main: main, ag: ag)
     let m = PopoverModel()
     m.gauges = zip(rings, Design.logoKeys).map { Design.gauge($0, logo: $1) }
+    m.rows = Design.rows(main: main, ag: ag, loaded: true)
     m.header = Design.header(lastCheck: Date(), main: main)
     m.todo = Design.loadTodo()
     let low = Design.lowest(rings)
@@ -432,7 +434,7 @@ enum HabitGate {
 }
 
 // shown in the log at launch, so a rebuilt and reinstalled app can be told apart from the previous one
-enum AppVersion { static let string = "1.0.4" }
+enum AppVersion { static let string = "1.0.5" }
 
 @main
 struct UsageGaugeMain {

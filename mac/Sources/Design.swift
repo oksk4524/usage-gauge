@@ -18,13 +18,14 @@ enum Palette {
                               line: NSColor(white: 0, alpha: 0.07), accent: hex(0x7b3f6e))
 }
 
-enum RingTone: Equatable { case green, amber, red, off }
+enum RingTone: Equatable { case green, amber, red, off, stale }   // stale: an old value, drawn grey
 
 enum Design {
     // remaining 60% or more green, 30% or more amber, below that red (raw value, before rounding)
     static func tone(_ remaining: Double) -> RingTone { remaining >= 60 ? .green : remaining >= 30 ? .amber : .red }
     static func color(_ t: RingTone) -> NSColor {
-        switch t { case .green: return Palette.green; case .amber: return Palette.amber; case .red: return Palette.red; case .off: return .clear }
+        switch t { case .green: return Palette.green; case .amber: return Palette.amber; case .red: return Palette.red; case .off: return .clear
+        case .stale: return NSColor(white: 0.55, alpha: 0.7) }
     }
 
     // the four rings: Codex, Claude, Grok, Gemini (Antigravity). Antigravity's other pool is not a ring.
@@ -99,6 +100,100 @@ enum Design {
             g.detail = [weekLine, s.detail, g.detail].compactMap { $0 }.joined(separator: "\n")
         }
         return g
+    }
+
+    // ---- popover rows, B (owner's choice 2026-11-03, "주간 5시간 구분해서 볼 수 있게"): one row per service with a
+    // weekly bar and a 5-hour bar under it, the same shape, so the two limits read apart at a glance. A service without
+    // a 5-hour limit says "없음" on that line. A value that is old (failed refresh, or not read for a while) is drawn
+    // grey with "N시간 전 값" beside the name.
+    struct Line: Equatable {
+        var label: String          // "주간", "5시간"
+        var fraction: Double       // 0...1 of the bar filled
+        var value: String          // "81%", "다 씀", "없음", "—"
+        var reset: String          // "11/9 12:00", "03:20", a short status, or ""
+        var tone: RingTone         // bar color; .off = no fill
+        var emphasis: Bool         // value drawn red (used up)
+        var muted: Bool            // value drawn grey ("없음", "—")
+    }
+    struct Row: Equatable {
+        var logo: String
+        var name: String
+        var weekly: Line
+        var five: Line?            // nil when the service could not be read (only the weekly line with its status)
+        var staleText: String?     // "6시간 전 값"
+        var detail: String         // tooltip
+    }
+
+    // "방금 읽은 값" / "12분 전 값" / "6시간 전 값" / "2일 전 값"
+    static func ageText(_ t: Date?, now: Date = Date()) -> String? {
+        guard let t = t else { return nil }
+        let m = Int(max(0, now.timeIntervalSince(t)) / 60)
+        if m < 1 { return "방금 읽은 값" }
+        if m < 60 { return "\(m)분 전 값" }
+        if m < 48 * 60 { return "\(m / 60)시간 전 값" }
+        return "\(m / 1440)일 전 값"
+    }
+
+    static func row(_ q: Quota, logo: String, name: String, ag: Bool, now: Date = Date(), tz: TimeZone = .current) -> Row {
+        if !q.ok {
+            let st = shortStatus(q)
+            let w = Line(label: "주간", fraction: 0, value: "—", reset: st, tone: .off, emphasis: false, muted: true)
+            return Row(logo: logo, name: name, weekly: w, five: nil, staleText: nil, detail: name + ": " + (q.error ?? st))
+        }
+        let stale = Merge.showStale(q, ag: ag)
+        var tips: [String] = []
+        // weekly
+        let wReset = q.resetsAt.map { when($0, now: now, tz: tz) } ?? ""
+        var weekly: Line
+        if q.remaining <= 0 {
+            weekly = Line(label: "주간", fraction: 0, value: "다 씀", reset: wReset, tone: .off, emphasis: !stale, muted: false)
+            tips.append("주간 다 씀" + (wReset.isEmpty ? "" : ", " + wReset + "에 다시 차요"))
+        } else {
+            weekly = Line(label: "주간", fraction: min(1, q.remaining / 100), value: Usage.remainingNumber(q.remaining) + "%",
+                          reset: wReset, tone: tone(q.remaining), emphasis: false, muted: false)
+            tips.append("주간 " + Usage.remainingNumber(q.remaining) + "% 남음" + (wReset.isEmpty ? "" : ", 초기화 " + wReset))
+        }
+        // the 5-hour window (or the service's other short window); "없음" when the service sends none
+        let ws = MenuBarStrip.others(q)
+        var five: Line
+        if let w = ws.first(where: { $0.label == "5시간" }) ?? ws.first {
+            var reset = ""
+            if w.remaining < 100, let r = w.reset { reset = r > now ? MenuBarStrip.clock(r, tz: tz) : "곧" }
+            if MenuBarStrip.isUsedUp(w) {
+                five = Line(label: w.label, fraction: 0, value: "다 씀", reset: reset, tone: .off, emphasis: !stale, muted: false)
+                tips.append(w.label + " 다 씀" + (reset.isEmpty ? "" : reset == "곧" ? ", 곧 다시 차요" : ", " + reset + "에 다시 차요"))
+            } else {
+                five = Line(label: w.label, fraction: min(1, w.remaining / 100), value: Usage.remainingNumber(w.remaining) + "%",
+                            reset: reset, tone: tone(w.remaining), emphasis: false, muted: false)
+                tips.append(w.label + " " + Usage.remainingNumber(w.remaining) + "% 남음" + (reset.isEmpty || reset == "곧" ? "" : ", " + reset + "에 다시 차요"))
+            }
+        } else {
+            five = Line(label: "5시간", fraction: 0, value: "없음", reset: "", tone: .off, emphasis: false, muted: true)
+            tips.append("5시간 한도는 이 서비스가 지금 알려 주지 않아요")
+        }
+        var staleText: String?
+        if stale {
+            staleText = ageText(q.lastOk, now: now) ?? "오래된 값"
+            weekly.tone = weekly.tone == .off ? .off : .stale; five.tone = five.tone == .off ? .off : .stale
+            tips.append("값이 오래됐어요" + (q.failing ? ": " + (q.error ?? "") : ""))
+        }
+        if let a = q.account { tips.append("계정 " + (DashboardFeed.mask(a) ?? a)) }
+        return Row(logo: logo, name: name, weekly: weekly, five: five, staleText: staleText, detail: tips.joined(separator: "\n"))
+    }
+
+    // Codex, Claude, Grok, Gemini 4 Argon, Antigravity (the menu bar's order); Antigravity rows only once read
+    static let rowNames = ["Codex", "Claude", "Grok", "Gemini 4 Argon", "Antigravity"]
+    static let rowLogos = ["codex", "claude", "grok", "gemini", "antigravity"]
+    static func rows(main: [Quota], ag: [Quota], loaded: Bool, now: Date = Date(), tz: TimeZone = .current) -> [Row] {
+        func waiting(_ i: Int) -> Row {
+            let q = Quota(); q.error = "확인 전"
+            return row(q, logo: rowLogos[i], name: rowNames[i], ag: i >= 3, now: now, tz: tz)
+        }
+        guard loaded else { return (0..<4).map(waiting) }
+        var out: [Row] = main.prefix(3).enumerated().map { i, q in row(q, logo: rowLogos[i], name: rowNames[i], ag: false, now: now, tz: tz) }
+        if ag.isEmpty { out.append(waiting(3)) }
+        for (j, q) in ag.prefix(2).enumerated() { out.append(row(q, logo: rowLogos[3 + j], name: rowNames[3 + j], ag: true, now: now, tz: tz)) }
+        return out
     }
 
     // a column is ~70pt wide: the full message goes to the tooltip

@@ -7,6 +7,7 @@ import SwiftUI
 final class PopoverModel: ObservableObject {
     @Published var header = ""
     @Published var gauges: [Design.Gauge] = []
+    @Published var rows: [Design.Row] = []
     @Published var todo: Design.Todo?
     @Published var busy = false
     @Published var habitRunning = false
@@ -81,6 +82,67 @@ struct GaugeColumn: View {
     }
 }
 
+// B (2026-11-03): one row per service, a weekly bar and a 5-hour bar of the same shape under the name
+struct LineView: View {
+    let l: Design.Line
+    let main: Bool                 // the weekly line: thicker bar, bolder number
+    let scheme: Palette.Scheme
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(l.label).font(.system(size: 10.5, weight: main ? .bold : .semibold))
+                .foregroundColor(Color(main ? scheme.fg : scheme.sub))
+                .frame(width: 30, alignment: .leading)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color(scheme.track))
+                    if l.tone != .off && l.fraction > 0 {
+                        Capsule().fill(Color(Design.color(l.tone)))
+                            .frame(width: max(main ? 7 : 4, geo.size.width * CGFloat(l.fraction)))
+                    }
+                }
+            }
+            .frame(height: main ? 7 : 4)
+            Text(l.value)
+                .font(.system(size: main ? 12.5 : 11.5, weight: main ? .bold : .semibold)).monospacedDigit()
+                .foregroundColor(Color(l.emphasis ? Palette.red : l.muted || l.tone == .stale ? scheme.sub : scheme.fg))
+                .lineLimit(1).minimumScaleFactor(0.8)
+                .frame(width: 40, alignment: .trailing)
+            Text(l.reset).font(.system(size: 10.5)).foregroundColor(Color(scheme.sub))
+                .lineLimit(1).minimumScaleFactor(0.75)
+                .frame(width: 66, alignment: .leading)
+        }
+        .frame(height: main ? 17 : 15)
+    }
+}
+
+struct RowView: View {
+    let r: Design.Row
+    let scheme: Palette.Scheme
+    let dark: Bool
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                if let img = Design.logo(r.logo, dark: dark) {
+                    Image(nsImage: img).resizable().interpolation(.high).frame(width: 15, height: 15)
+                        .opacity(r.staleText != nil ? 0.5 : 1)
+                }
+                Text(r.name).font(.system(size: 12.5, weight: .bold)).foregroundColor(Color(scheme.fg))
+                Spacer(minLength: 4)
+                if let t = r.staleText {
+                    Circle().fill(Color(Palette.amber)).frame(width: 6, height: 6)
+                    Text(t).font(.system(size: 10.5, weight: .semibold)).foregroundColor(Color(Palette.amber))
+                }
+            }
+            .padding(.bottom, 3)
+            LineView(l: r.weekly, main: true, scheme: scheme)
+            if let f = r.five { LineView(l: f, main: false, scheme: scheme) }
+        }
+        .padding(.vertical, 7)
+        .contentShape(Rectangle())
+        .help(r.detail)
+    }
+}
+
 struct FooterButton: View {
     let title: String
     let color: Color
@@ -112,11 +174,15 @@ struct PopoverView: View {
                     Text(model.header).font(.system(size: 11)).foregroundColor(Color(s.sub))
                 }
             }
-            .padding(.horizontal, 2).padding(.bottom, 12)
+            .padding(.horizontal, 2).padding(.bottom, 4)
 
-            HStack(alignment: .top, spacing: 4) {
-                ForEach(Array(model.gauges.enumerated()), id: \.offset) { _, g in GaugeColumn(g: g, scheme: s, dark: dark) }
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(model.rows.enumerated()), id: \.offset) { i, r in
+                    if i > 0 { Rectangle().fill(Color(s.line)).frame(height: 1) }
+                    RowView(r: r, scheme: s, dark: dark)
+                }
             }
+            .padding(.horizontal, 2)
 
             if let t = model.todo {
                 Rectangle().fill(Color(s.line)).frame(height: 1).padding(.top, 14)
@@ -164,6 +230,13 @@ enum Preview {
         let m = PopoverModel()
         m.header = Design.header(lastCheck: now, main: [codex, claude, grok], now: now)
         m.gauges = zip([codex, claude, grok, gem], Design.logoKeys).map { Design.gauge($0, logo: $1, now: now, tz: tz) }
+        claude.windows = [UsageWindow(key: "five_hour", used: 65, reset: at(10, 30, 20, 20))]
+        let old = q(81, at(11, 9, 12, 0), "claude:c"); old.lastOk = now.addingTimeInterval(-6 * 3600); old.failing = true; old.stale = true
+        old.error = "토큰 갱신 대기: Claude Code를 한 번 열어 주세요"
+        let agy = q(100, at(11, 6, 0, 0), "ag"); agy.windows = [UsageWindow(key: "five_hour", used: 0, reset: at(10, 30, 22, 15))]
+        for x in [codex, claude, grok, gem, agy] { x.lastOk = now }
+        m.rows = Design.rows(main: [codex, claude, grok], ag: [gem, agy], loaded: true, now: now, tz: tz)
+            + [Design.row(old, logo: "claude", name: "Claude (오래된 값 예시)", ag: false, now: now, tz: tz)]
         m.todo = Design.Todo(name: "\"[유령마작] 점검, 스토리, 최적화\"", tokens: Design.compact(852373) + " 토큰")
         return m
     }
