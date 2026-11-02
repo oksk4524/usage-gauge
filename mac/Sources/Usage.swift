@@ -236,6 +236,14 @@ enum Usage {
         return q
     }
     private static func claudeLookup(cfg: String?, gen: inout Int) -> Quota {
+        // the token has expired or is about to: Claude Code renews it first, then the keychain is read again
+        if let l = claudeLoginCached(reread: false), l.error == nil, l.access != nil, ClaudeRenew.runIfDue(expires: l.expires) {
+            forgetClaudeLogin()
+            if let n = claudeLoginCached(reread: false), n.error == nil, let e = n.expires {
+                let m = Int(e.timeIntervalSinceNow / 60)
+                Log.write(m > 10 ? "claude renew: login renewed, good for \(m) min" : m > 0 ? "claude renew: not renewed yet, \(m) min left" : "claude renew: the login is still expired")
+            }
+        }
         var err: String?; var used: Login?; var sawLogin = false; var calls = 0
         let (st, body) = authedGet("https://api.anthropic.com/api/oauth/usage", "anthropic-beta", "oauth-2025-04-20") {
             calls += 1
