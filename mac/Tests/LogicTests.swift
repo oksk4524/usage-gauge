@@ -600,5 +600,13 @@ do {
     let now2 = t0
     check(freshnessText(now2, now: now2.addingTimeInterval(30)) == "방금 확인" && freshnessText(now2, now: now2.addingTimeInterval(185)) == "3분 전 확인"
           && freshnessText(nil) == nil, "freshness text")
+    // Claude Code renews its own login: only near or past the expiry, at most once every 20 min
+    check(!ClaudeRenew.due(expires: now2.addingTimeInterval(3600), lastRun: nil, now: now2)
+          && !ClaudeRenew.due(expires: nil, lastRun: nil, now: now2), "claude renew: not while the token has time left or no expiry is known")
+    check(ClaudeRenew.due(expires: now2.addingTimeInterval(120), lastRun: nil, now: now2)
+          && ClaudeRenew.due(expires: now2.addingTimeInterval(-7200), lastRun: now2.addingTimeInterval(-21 * 60), now: now2),
+          "claude renew: due within 4 min of the expiry or after it")
+    check(!ClaudeRenew.due(expires: now2.addingTimeInterval(-60), lastRun: now2.addingTimeInterval(-5 * 60), now: now2),
+          "claude renew: not again within 20 min of the last run")
 }
 print("RESULT \(passed) mac logic tests passed")
