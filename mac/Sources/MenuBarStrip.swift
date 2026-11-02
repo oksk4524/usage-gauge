@@ -181,6 +181,9 @@ enum MenuBarStrip {
     // The mock is a 24 px bar; this image is 22 pt tall and sits 1 pt below the bar top, so mock row r = image row r - 1.
     static let gap: CGFloat = 3, barW: CGFloat = 2, barH: CGFloat = 12, between: CGFloat = 10
     static let height: CGFloat = 22, trackAlpha: CGFloat = 0.3
+    // an old value (2026-11-03): the whole item at 40% ink and a 4 pt dot after it (one template image, so the dot
+    // takes the menu bar's own text color; the popover shows the amber "N시간 전 값")
+    static let staleAlpha: CGFloat = 0.4, staleDot: CGFloat = 4, staleDotSpace: CGFloat = 2 + 4
     static let glyphTop: CGFloat = 4      // mock row 5: top of the logo cell
     static let barTop: CGFloat = 6        // mock row 7..18
     static let baselineTop: CGFloat = 16  // mock baseline 17
@@ -200,7 +203,7 @@ enum MenuBarStrip {
         for (i, e) in es.enumerated() {
             let adv = CGFloat(MenuBarGlyphs.named(e.logo)?.advance ?? 15)
             let extra = extraWidths.map { $0[i] > 0 ? gap + $0[i] : 0 } ?? 0
-            total += (i > 0 ? between : 0) + adv + gap + barW + gap + widths[i] + extra
+            total += (i > 0 ? between : 0) + adv + gap + barW + gap + widths[i] + extra + (e.stale ? staleDotSpace : 0)
         }
         return total
     }
@@ -218,29 +221,38 @@ enum MenuBarStrip {
             var x: CGFloat = 0
             for (i, e) in es.enumerated() {
                 if i > 0 { x += between }
+                let ink: CGFloat = e.stale ? staleAlpha : 1
                 if let g = MenuBarGlyphs.named(e.logo), let gi = MenuBarGlyphs.image(e.logo) {
                     let r = NSRect(x: x, y: height - glyphTop - CGFloat(g.cellH), width: CGFloat(g.cellW), height: CGFloat(g.cellH))
-                    gi.draw(in: r, from: .zero, operation: .sourceOver, fraction: 1)
+                    gi.draw(in: r, from: .zero, operation: .sourceOver, fraction: ink)
                     x += CGFloat(g.advance)
                 } else { x += 15 }
                 x += gap
                 // bar: faint track, then the remaining part from the bottom (no outline)
                 let barY = height - barTop - barH
-                NSColor.black.withAlphaComponent(trackAlpha).setFill()
+                NSColor.black.withAlphaComponent(trackAlpha * ink).setFill()
                 NSBezierPath(roundedRect: NSRect(x: x, y: barY, width: barW, height: barH), xRadius: 1, yRadius: 1).fill()
                 let fh = fillHeight(barRemaining(e))
                 if fh > 0 {
-                    NSColor.black.setFill()
+                    NSColor.black.withAlphaComponent(ink).setFill()
                     NSBezierPath(roundedRect: NSRect(x: x, y: barY, width: barW, height: fh), xRadius: 1, yRadius: 1).fill()
                 }
                 x += barW + gap
                 // number (or refill day/hour) at full ink; draw(at:) takes the line bottom = baseline + descender
-                (texts[i] as NSString).draw(at: NSPoint(x: x, y: height - baselineTop + textFont(texts[i]).descender), withAttributes: attrs[i])
+                var a = attrs[i]; a[.foregroundColor] = NSColor.black.withAlphaComponent(ink)
+                (texts[i] as NSString).draw(at: NSPoint(x: x, y: height - baselineTop + textFont(texts[i]).descender), withAttributes: a)
                 x += widths[i]
                 if let t = blockedTexts[i] {
                     x += gap
-                    (t as NSString).draw(at: NSPoint(x: x, y: height - baselineTop + labelFont.descender), withAttributes: blockedAttrs)
+                    var b = blockedAttrs; b[.foregroundColor] = NSColor.black.withAlphaComponent(ink)
+                    (t as NSString).draw(at: NSPoint(x: x, y: height - baselineTop + labelFont.descender), withAttributes: b)
                     x += extraWidths[i]
+                }
+                if e.stale {
+                    x += 2
+                    NSColor.black.setFill()
+                    NSBezierPath(ovalIn: NSRect(x: x, y: height - barTop - staleDot, width: staleDot, height: staleDot)).fill()
+                    x += staleDot
                 }
             }
             return true

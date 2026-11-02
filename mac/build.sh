@@ -14,7 +14,7 @@ swiftc -O -swift-version 5 -parse-as-library \
 cp Info.plist "$OUT/Contents/Info.plist"
 # service logos (light screens use the -dark variants)
 mkdir -p "$OUT/Contents/Resources/logos"
-for f in codex codex-dark claude grok grok-dark gemini; do cp "../assets/$f.png" "$OUT/Contents/Resources/logos/"; done
+for f in codex codex-dark claude grok grok-dark gemini antigravity; do cp "../assets/$f.png" "$OUT/Contents/Resources/logos/"; done
 plutil -lint "$OUT/Contents/Info.plist" >/dev/null
 # local signature (binds Info.plist to the binary; not a Developer ID signature, not notarized).
 # A stable self-signed identity in the login keychain keeps the designated requirement the same across

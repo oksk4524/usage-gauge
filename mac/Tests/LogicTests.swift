@@ -608,5 +608,31 @@ do {
           "claude renew: due within 4 min of the expiry or after it")
     check(!ClaudeRenew.due(expires: now2.addingTimeInterval(-60), lastRun: now2.addingTimeInterval(-5 * 60), now: now2),
           "claude renew: not again within 20 min of the last run")
+    // popover rows (B): weekly and 5-hour on their own lines; no 5-hour window says 없음; an old value is grey with its age
+    do {
+        let tzR = TimeZone(identifier: "Asia/Seoul")!
+        let nowR = Date()   // Merge.showStale reads the real clock
+        let c = Usage.ok(81); c.name = "Claude"; c.resetsAt = nowR.addingTimeInterval(5 * 86400); c.lastOk = nowR
+        c.windows = [UsageWindow(key: "seven_day", used: 19, reset: c.resetsAt), UsageWindow(key: "five_hour", used: 65, reset: nowR.addingTimeInterval(7200))]
+        let r = Design.row(c, logo: "claude", name: "Claude", ag: false, now: nowR, tz: tzR)
+        check(r.weekly.label == "주간" && r.weekly.value == "81%" && r.five?.label == "5시간" && r.five?.value == "35%"
+              && r.five?.reset == MenuBarStrip.clock(nowR.addingTimeInterval(7200), tz: tzR) && r.staleText == nil, "row: weekly 81%, 5-hour 35% with its refill clock")
+        let g = Usage.ok(79); g.name = "Grok"; g.lastOk = nowR
+        let rg = Design.row(g, logo: "grok", name: "Grok", ag: false, now: nowR, tz: tzR)
+        check(rg.five?.value == "없음" && rg.five?.muted == true && rg.five?.tone == .off, "row: no 5-hour window reads 없음")
+        let u = Usage.ok(80); u.name = "Claude"; u.lastOk = nowR; u.windows = [UsageWindow(key: "five_hour", used: 100, reset: nowR.addingTimeInterval(600))]
+        let ru = Design.row(u, logo: "claude", name: "Claude", ag: false, now: nowR, tz: tzR)
+        check(ru.five?.value == "다 씀" && ru.five?.emphasis == true && ru.weekly.value == "80%", "row: a used-up 5-hour window is red, the weekly line stays")
+        let o = Usage.ok(81); o.name = "Claude"; o.lastOk = nowR.addingTimeInterval(-6 * 3600); o.failing = true; o.stale = true; o.error = "토큰 갱신 대기"
+        let ro = Design.row(o, logo: "claude", name: "Claude", ag: false, now: nowR, tz: tzR)
+        check(ro.staleText == "6시간 전 값" && ro.weekly.tone == .stale && ro.detail.contains("토큰 갱신 대기"), "row: an old value is grey with its age and the reason in the tooltip")
+        let f = Quota.noLoginFound(); f.name = "Codex"
+        let rf = Design.row(f, logo: "codex", name: "Codex", ag: false, now: nowR, tz: tzR)
+        check(rf.five == nil && rf.weekly.value == "—" && rf.weekly.reset == "로그인 필요", "row: a service that could not be read shows its status only")
+        check(Design.rows(main: [], ag: [], loaded: false).count == 4, "rows: four waiting rows before the first lookup")
+        var e = MenuBarStrip.Entry(logo: "claude", name: "Claude", window: "주간", remaining: 81, reset: nil, stale: false)
+        let w1 = MenuBarStrip.image([e], now: nowR).size.width; e.stale = true
+        check(abs(MenuBarStrip.image([e], now: nowR).size.width - w1 - MenuBarStrip.staleDotSpace) < 0.5, "menu bar: an old value adds its dot")
+    }
 }
 print("RESULT \(passed) mac logic tests passed")
