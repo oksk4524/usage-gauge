@@ -12,9 +12,17 @@ final class PopoverModel: ObservableObject {
     @Published var busy = false
     @Published var habitRunning = false
     @Published var habitWait: String?   // "N분 뒤에 다시 돌릴 수 있어요" within 10 min of the last run
+    // hover and spin state of the footer buttons (an object, since this SDK's @State needs a macro plugin the
+    // command line tools don't ship)
+    let detailsUI = ButtonUI(), habitUI = ButtonUI(), refreshUI = ButtonUI()
     var onDetails: () -> Void = {}
     var onHabit: () -> Void = {}
     var onRefresh: () -> Void = {}
+}
+
+final class ButtonUI: ObservableObject {
+    @Published var hover = false
+    @Published var spins = 0.0
 }
 
 extension Color { init(_ c: NSColor) { self.init(nsColor: c) } }
@@ -143,17 +151,56 @@ struct RowView: View {
     }
 }
 
+// Footer text buttons (2026-11-03, "호버이펙트 간단히"): a soft rounded fill under the pointer, the text one step darker
 struct FooterButton: View {
     let title: String
     let color: Color
     let bold: Bool
+    var hoverColor: Color? = nil
+    var fill: Color = .clear
+    var forcedHover: Bool? = nil   // previews
+    @ObservedObject var ui: ButtonUI
     let action: () -> Void
     var body: some View {
+        let on = forcedHover ?? ui.hover
         Button(action: action) {
-            Text(title).font(.system(size: 12, weight: bold ? .bold : .regular)).foregroundColor(color)
-                .padding(.vertical, 5).padding(.horizontal, 8).contentShape(Rectangle())
+            Text(title).font(.system(size: 12, weight: bold ? .bold : .regular)).foregroundColor(on ? (hoverColor ?? color) : color)
+                .padding(.vertical, 5).padding(.horizontal, 8)
+                .background(RoundedRectangle(cornerRadius: 6).fill(on ? fill : .clear))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { ui.hover = h } }
+    }
+}
+
+// The refresh button: under the pointer it leans a little (40 degrees) on a soft round fill; a click spins it once
+// all the way round, fast, so hover and press read differently.
+struct RefreshButton: View {
+    let busy: Bool
+    let scheme: Palette.Scheme
+    let fill: Color
+    var forcedHover: Bool? = nil   // previews
+    var forcedAngle: Double? = nil
+    @ObservedObject var ui: ButtonUI
+    let action: () -> Void
+    var body: some View {
+        let on = forcedHover ?? ui.hover
+        let angle = forcedAngle ?? ((on ? 40 : 0) + ui.spins * 360)
+        Button(action: {
+            withAnimation(.easeOut(duration: 0.55)) { ui.spins += 1 }
+            action()
+        }) {
+            Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: on ? .semibold : .medium))
+                .foregroundColor(Color(on ? scheme.fg : scheme.sub))
+                .rotationEffect(.degrees(angle))
+                .opacity(busy && !on ? 0.4 : 1)
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(on ? fill : .clear))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain).help("새로고침")
+        .onHover { h in withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { ui.hover = h } }
     }
 }
 
@@ -162,6 +209,8 @@ struct PopoverView: View {
     @Environment(\.colorScheme) var colorScheme
     var forcedDark: Bool?          // previews render a fixed mode
     var rounded = false            // previews draw the popover's own corners
+    var forcedHover: Int? = nil    // previews: 1 상세 보기, 2 AI 진단, 3 refresh under the pointer
+    var forcedAngle: Double? = nil // previews: the refresh icon's angle mid-spin
 
     var body: some View {
         let dark = forcedDark ?? (colorScheme == .dark)
@@ -197,18 +246,20 @@ struct PopoverView: View {
 
             Rectangle().fill(Color(s.line)).frame(height: 1).padding(.top, 10)
             HStack(spacing: 4) {
-                FooterButton(title: "사용량 상세 보기", color: Color(s.accent), bold: true, action: model.onDetails)
-                FooterButton(title: model.habitRunning ? "진단 중…" : "AI 진단", color: Color(s.sub), bold: false, action: model.onHabit)
+                let fill = Color(s.track)
+                let habitOff = model.habitRunning || model.habitWait != nil
+                FooterButton(title: "사용량 상세 보기", color: Color(s.accent), bold: true, fill: fill,
+                             forcedHover: forcedHover == 1 ? true : nil, ui: model.detailsUI, action: model.onDetails)
+                FooterButton(title: model.habitRunning ? "진단 중…" : "AI 진단", color: Color(s.sub), bold: false,
+                             hoverColor: habitOff ? nil : Color(s.fg), fill: habitOff ? .clear : fill,
+                             forcedHover: forcedHover == 2 ? true : nil, ui: model.habitUI, action: model.onHabit)
                     .opacity(model.habitWait != nil && !model.habitRunning ? 0.5 : 1)
-                    .disabled(model.habitRunning || model.habitWait != nil)
+                    .disabled(habitOff)
                     .help(model.habitWait ?? "")
                 Spacer()
-                Button(action: model.onRefresh) {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .medium)).foregroundColor(Color(s.sub))
-                        .opacity(model.busy ? 0.4 : 1)
-                        .padding(.vertical, 5).padding(.horizontal, 8).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).disabled(model.busy).help("새로고침")
+                RefreshButton(busy: model.busy, scheme: s, fill: fill,
+                              forcedHover: forcedHover == 3 ? true : nil, forcedAngle: forcedAngle, ui: model.refreshUI, action: model.onRefresh)
+                    .padding(.trailing, 2)
             }
             .padding(.top, 8)
         }
@@ -281,6 +332,20 @@ enum Preview {
             }
             .padding(12).background(Color(nsColor: Palette.hex(0x171717)))
             let p = (dir as NSString).appendingPathComponent(dark ? "preview-mock-dark.png" : "preview-mock-light.png")
+            if png(v, p) { out.append(p) }
+        }
+        // footer states: normal, 상세 보기 hovered, AI 진단 hovered, refresh hovered (40 degrees), refresh mid-spin
+        for dark in [false, true] {
+            let m = mockModel(now: now, tz: tz); m.todo = nil
+            let states: [(Int?, Double?)] = [(nil, nil), (1, nil), (2, nil), (3, nil), (3, 220)]
+            let v = VStack(spacing: 6) {
+                ForEach(Array(states.enumerated()), id: \.offset) { _, st in
+                    PopoverView(model: m, forcedDark: dark, rounded: true, forcedHover: st.0, forcedAngle: st.1)
+                        .frame(height: 44, alignment: .bottom).clipped()
+                }
+            }
+            .padding(12).background(Color(nsColor: Palette.hex(0x171717)))
+            let p = (dir as NSString).appendingPathComponent(dark ? "preview-footer-dark.png" : "preview-footer-light.png")
             if png(v, p) { out.append(p) }
         }
         if let (m, rem, logo) = real {
