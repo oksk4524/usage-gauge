@@ -174,8 +174,36 @@ struct FooterButton: View {
     }
 }
 
-// The refresh button: under the pointer it leans a little (40 degrees) on a soft round fill; a click spins it once
-// all the way round, fast, so hover and press read differently.
+// The refresh arrow, drawn here instead of the SF Symbol: the symbol's circle is not at the centre of its box
+// (the arrowhead sticks out), so it wobbled while it turned. This one turns around its own centre. (2026-11-03)
+struct RefreshGlyph: Shape {
+    func path(in rect: CGRect) -> Path {
+        let c = CGPoint(x: rect.midX, y: rect.midY), r = min(rect.width, rect.height) * 0.34
+        let a0 = -45.0, a1 = 255.0                     // degrees, y down: from 1:30 clockwise round to 11 o'clock
+        var p = Path()
+        p.addArc(center: c, radius: r, startAngle: .degrees(a0), endAngle: .degrees(a1), clockwise: false)
+        return p
+    }
+}
+struct RefreshHead: Shape {          // the arrowhead at the arc's end, pointing the way it turns
+    func path(in rect: CGRect) -> Path {
+        let c = CGPoint(x: rect.midX, y: rect.midY), r = min(rect.width, rect.height) * 0.34
+        let t = 255.0 * Double.pi / 180
+        let end = CGPoint(x: c.x + r * cos(t), y: c.y + r * sin(t))
+        let d = CGPoint(x: -sin(t), y: cos(t))            // tangent, clockwise
+        let n = CGPoint(x: cos(t), y: sin(t))             // outward
+        let s = r * 0.62
+        var p = Path()
+        p.move(to: CGPoint(x: end.x + d.x * s * 0.9, y: end.y + d.y * s * 0.9))
+        p.addLine(to: CGPoint(x: end.x - d.x * s * 0.35 + n.x * s * 0.75, y: end.y - d.y * s * 0.35 + n.y * s * 0.75))
+        p.addLine(to: CGPoint(x: end.x - d.x * s * 0.35 - n.x * s * 0.75, y: end.y - d.y * s * 0.35 - n.y * s * 0.75))
+        p.closeSubpath()
+        return p
+    }
+}
+
+// The refresh button: under the pointer it leans a little (40 degrees) on a soft round fill; a click turns it once all
+// the way round. Both ease in and out without overshoot, so the turn starts and stops softly.
 struct RefreshButton: View {
     let busy: Bool
     let scheme: Palette.Scheme
@@ -184,23 +212,31 @@ struct RefreshButton: View {
     var forcedAngle: Double? = nil
     @ObservedObject var ui: ButtonUI
     let action: () -> Void
+    static let spin = Animation.timingCurve(0.45, 0, 0.2, 1, duration: 0.75)
+    static let lean = Animation.easeInOut(duration: 0.28)
     var body: some View {
         let on = forcedHover ?? ui.hover
         let angle = forcedAngle ?? ((on ? 40 : 0) + ui.spins * 360)
+        let ink = Color(on ? scheme.fg : scheme.sub)
         Button(action: {
-            withAnimation(.easeOut(duration: 0.55)) { ui.spins += 1 }
+            withAnimation(RefreshButton.spin) { ui.spins += 1 }
             action()
         }) {
-            Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: on ? .semibold : .medium))
-                .foregroundColor(Color(on ? scheme.fg : scheme.sub))
+            ZStack {
+                Circle().fill(on ? fill : .clear)
+                ZStack {
+                    RefreshGlyph().stroke(ink, style: StrokeStyle(lineWidth: on ? 1.6 : 1.4, lineCap: .round))
+                    RefreshHead().fill(ink)
+                }
+                .frame(width: 14, height: 14)
                 .rotationEffect(.degrees(angle))
                 .opacity(busy && !on ? 0.4 : 1)
-                .frame(width: 24, height: 24)
-                .background(Circle().fill(on ? fill : .clear))
-                .contentShape(Circle())
+            }
+            .frame(width: 24, height: 24)
+            .contentShape(Circle())
         }
         .buttonStyle(.plain).help("새로고침")
-        .onHover { h in withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { ui.hover = h } }
+        .onHover { h in withAnimation(RefreshButton.lean) { ui.hover = h } }
     }
 }
 
@@ -347,6 +383,29 @@ enum Preview {
             .padding(12).background(Color(nsColor: Palette.hex(0x171717)))
             let p = (dir as NSString).appendingPathComponent(dark ? "preview-footer-dark.png" : "preview-footer-light.png")
             if png(v, p) { out.append(p) }
+        }
+        // the click's turn as frames (40 -> 400 degrees on the same curve), for a gif check of the motion
+        do {
+            let fdir = (dir as NSString).appendingPathComponent("spin")
+            try? FileManager.default.createDirectory(atPath: fdir, withIntermediateDirectories: true)
+            func bez(_ t: Double) -> Double {   // cubic-bezier(0.45, 0, 0.2, 1): solve x(u) = t, return y(u)
+                var lo = 0.0, hi = 1.0
+                for _ in 0..<40 {
+                    let u = (lo + hi) / 2, x = 3 * (1 - u) * (1 - u) * u * 0.45 + 3 * (1 - u) * u * u * 0.2 + u * u * u
+                    if x < t { lo = u } else { hi = u }
+                }
+                let u = (lo + hi) / 2
+                return 3 * (1 - u) * u * u * 1 + u * u * u
+            }
+            let n = 45   // 0.75 s at 60 fps
+            var k = 0
+            for i in 0...(n + 15) {
+                let t = min(1, Double(i) / Double(n))
+                let v = RefreshButton(busy: false, scheme: Palette.light, fill: Color(Palette.light.track), forcedHover: true,
+                                      forcedAngle: 40 + 360 * bez(t), ui: ButtonUI(), action: {})
+                    .padding(8).background(Color(nsColor: Palette.light.bg))
+                if png(v, (fdir as NSString).appendingPathComponent(String(format: "f%03d.png", k))) { k += 1 }
+            }
         }
         if let (m, rem, logo) = real {
             let dark = NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
