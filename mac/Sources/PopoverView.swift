@@ -151,6 +151,33 @@ struct RowView: View {
     }
 }
 
+// Hover that works in this menu bar app. SwiftUI's onHover only fires while the app is active, and the popover opens
+// without activating the app (so it never takes focus from what you are working in): no hover effect showed at all.
+// An AppKit tracking area with .activeAlways sees the pointer either way; the view lets every click through.
+struct HoverArea: NSViewRepresentable {
+    let onChange: (Bool) -> Void
+    final class V: NSView {
+        var onChange: (Bool) -> Void = { _ in }
+        private var inside = false
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            for t in trackingAreas { removeTrackingArea(t) }
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil))
+        }
+        private func set(_ v: Bool) { if v != inside { inside = v; onChange(v) } }
+        override func mouseEntered(with event: NSEvent) { set(true) }
+        override func mouseExited(with event: NSEvent) { set(false) }
+        // the popover closes or the view goes away while the pointer is on it: don't leave the button lit
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window == nil { set(false) } }
+    }
+    func makeNSView(context: Context) -> V { let v = V(); v.onChange = onChange; return v }
+    func updateNSView(_ v: V, context: Context) { v.onChange = onChange }
+}
+extension View {
+    func hoverArea(_ onChange: @escaping (Bool) -> Void) -> some View { background(HoverArea(onChange: onChange)) }
+}
+
 // Footer text buttons (2026-11-03, "호버이펙트 간단히"): a soft rounded fill under the pointer, the text one step darker
 struct FooterButton: View {
     let title: String
@@ -170,7 +197,7 @@ struct FooterButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { ui.hover = h } }
+        .hoverArea { h in withAnimation(.easeOut(duration: 0.12)) { ui.hover = h } }
     }
 }
 
@@ -236,7 +263,7 @@ struct RefreshButton: View {
             .contentShape(Circle())
         }
         .buttonStyle(.plain).help("새로고침")
-        .onHover { h in withAnimation(RefreshButton.lean) { ui.hover = h } }
+        .hoverArea { h in withAnimation(RefreshButton.lean) { ui.hover = h } }
     }
 }
 
