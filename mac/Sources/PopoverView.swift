@@ -116,7 +116,7 @@ struct LineView: View {
                 .font(.system(size: main ? 12.5 : 11.5, weight: main ? .bold : .semibold)).monospacedDigit()
                 .foregroundColor(Color(l.emphasis ? Palette.red : l.muted || l.tone == .stale ? scheme.sub : scheme.fg))
                 .lineLimit(1).minimumScaleFactor(0.8)
-                .frame(width: L.ko ? 40 : 52, alignment: .trailing)   // "Used up" needs more room than "다 씀"
+                .frame(width: L.ko ? 40 : 86, alignment: .trailing)   // "Limit reached" needs more room than "소진"
             Text(l.reset).font(.system(size: 10.5)).foregroundColor(Color(scheme.sub))
                 .lineLimit(1).minimumScaleFactor(0.75)
                 .frame(width: 66, alignment: .leading)

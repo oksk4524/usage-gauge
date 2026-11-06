@@ -175,7 +175,7 @@ do {
     let es = MenuBarStrip.entries(main: [cx, cl, named(Quota.fail("서버 오류 500", transient: true), "Grok")], ag: [named(Quota.noLoginFound(), "Gemini")])
     check(es.map { $0.logo } == ["codex", "claude"], "menu bar C: unknown services hidden")
     check(es.map { MenuBarStrip.numberText($0, now: nowM, tz: tzS) } == ["37", "월"], "menu bar C: numbers without a % sign, used-up shows the refill weekday")
-    check(MenuBarStrip.tooltip(es, now: nowM, tz: tzS) == "Codex 주간 37% 남음\nClaude 주간 다 씀, 월 11:55에 다시 차요", "menu bar C: tooltip, one line per item")
+    check(MenuBarStrip.tooltip(es, now: nowM, tz: tzS) == "Codex 주간 37% 남음\nClaude 주간 소진, 월 11:55에 다시 차요", "menu bar C: tooltip, one line per item")
     let c5 = Usage.ok(80); c5.windows = [UsageWindow(key: "seven_day", used: 20, reset: nil), UsageWindow(key: "five_hour", used: 90, reset: nil), UsageWindow(key: "seven_day_opus", used: 99, reset: nil)]
     // weekly choice (2026-10-30): the number is always the weekly limit, even when the 5-hour window is lower
     let w5 = MenuBarStrip.weekly(c5)
@@ -222,7 +222,7 @@ do {
     let order = MenuBarStrip.entries(main: [cx, cl, grUsed], ag: agQ)
     check(order.map { $0.logo } == ["codex", "claude", "grok", "gemini", "antigravity"], "order: fixed Codex, Claude, Grok, Gemini 4 Argon, Antigravity")
     check(order.map { MenuBarStrip.numberText($0, now: nowM, tz: tzS) } == ["37", "월", "23시", "17", "100"], "order: used-up shows refill day or hour, usable shows the number")
-    check(MenuBarStrip.tooltip(order, now: nowM, tz: tzS) == "Codex 주간 37% 남음\nClaude 주간 다 씀, 월 11:55에 다시 차요\nGrok 주간 다 씀, 오늘 23:19에 다시 차요\nGemini 4 Argon 주간 17% 남음\nAntigravity(Gemini, Claude, GPT) 주간 100% 남음", "tooltip: all items in the new order, full text")
+    check(MenuBarStrip.tooltip(order, now: nowM, tz: tzS) == "Codex 주간 37% 남음\nClaude 주간 소진, 월 11:55에 다시 차요\nGrok 주간 소진, 오늘 23:19에 다시 차요\nGemini 4 Argon 주간 17% 남음\nAntigravity(Gemini, Claude, GPT) 주간 100% 남음", "tooltip: all items in the new order, full text")
     // refill label: local weekday, the hour within 24 hours
     check(MenuBarStrip.refillLabel(atS(11, 2, 12, 0), now: nowS, tz: tzS) == "월" && MenuBarStrip.refillLabel(atS(11, 4, 12, 43), now: nowS, tz: tzS) == "수", "refill label: Korean weekday")
     check(MenuBarStrip.refillLabel(atS(10, 31, 14, 0), now: nowS, tz: tzS) == "14시" && MenuBarStrip.refillLabel(atS(10, 30, 23, 59), now: nowS, tz: tzS) == "23시", "refill label: the hour when less than 24 hours away")
@@ -294,9 +294,9 @@ do {
     let g12 = Design.gauge(claude(70, 12), logo: "claude", now: now, tz: tz)
     check(g12.second == "5시간 12%" && g12.secondReset == "01:19에 다시 차요" && !g12.secondUsedUp, "ring: a low 5-hour window adds when it fills again")
     let g0 = Design.gauge(claude(99, 0), logo: "claude", now: now, tz: tz)
-    check(g0.percentText == "99" && g0.tone == .green && g0.second == "5시간 다 씀" && g0.secondReset == "01:19에 다시 차요" && g0.secondUsedUp,
-          "ring: 5-hour used up keeps the weekly ring, the line says 다 씀 and the refill time")
-    check(g0.detail == "주간 99% 남음\n5시간 다 씀, 01:19에 다시 차요", "ring: tooltip has the weekly and the 5-hour line")
+    check(g0.percentText == "99" && g0.tone == .green && g0.second == "5시간 소진" && g0.secondReset == "01:19에 다시 차요" && g0.secondUsedUp,
+          "ring: 5-hour used up keeps the weekly ring, the line says 소진 and the refill time")
+    check(g0.detail == "주간 99% 남음\n5시간 소진, 01:19에 다시 차요", "ring: tooltip has the weekly and the 5-hour line")
     let grokOnly = Usage.ok(40); grokOnly.windows = [UsageWindow(key: "weekly", used: 60, reset: nil)]
     check(Design.gauge(grokOnly, logo: "grok", now: now, tz: tz).second == nil, "ring: no other window, no second line")
     check(Design.gauge(claude(0, 100), logo: "claude", now: now, tz: tz).second == nil, "ring: weekly used up keeps the old look, no 5-hour line")
@@ -308,7 +308,7 @@ do {
           "marker: 0% in the 5-hour window blocks, the item stays with its weekly value")
     check(MenuBarStrip.numberText(es[0], now: now, tz: tz) == "99" && MenuBarStrip.blockedText(es[0], now: now, tz: tz) == "1시"
           && MenuBarStrip.barRemaining(es[0]) == 0, "marker: weekly number, empty bar, refill hour like a used-up item")
-    check(MenuBarStrip.tooltip(es, now: now, tz: tz) == "Claude 주간 99% 남음\n5시간 다 씀, 01:19에 다시 차요", "marker: tooltip")
+    check(MenuBarStrip.tooltip(es, now: now, tz: tz) == "Claude 주간 99% 남음\n5시간 소진, 01:19에 다시 차요", "marker: tooltip")
     let open = MenuBarStrip.entries(main: [none, claude(99, 1)], ag: [])[0]
     check(open.blocked == nil && MenuBarStrip.blockedText(open, now: now, tz: tz) == nil && MenuBarStrip.barRemaining(open) == 99, "marker: 1% left is not blocked")
     check(MenuBarStrip.entries(main: [none, claude(99, 1.5)], ag: [])[0].blocked == nil && MenuBarStrip.entries(main: [none, claude(99, 0.4)], ag: [])[0].blocked == nil,
@@ -624,7 +624,7 @@ do {
         check(rg.five?.value == "없음" && rg.five?.muted == true && rg.five?.tone == .off, "row: no 5-hour window reads 없음")
         let u = Usage.ok(80); u.name = "Claude"; u.lastOk = nowR; u.windows = [UsageWindow(key: "five_hour", used: 100, reset: nowR.addingTimeInterval(600))]
         let ru = Design.row(u, logo: "claude", name: "Claude", ag: false, now: nowR, tz: tzR)
-        check(ru.five?.value == "다 씀" && ru.five?.emphasis == true && ru.weekly.value == "80%", "row: a used-up 5-hour window is red, the weekly line stays")
+        check(ru.five?.value == "소진" && ru.five?.emphasis == true && ru.weekly.value == "80%", "row: a used-up 5-hour window is red, the weekly line stays")
         let o = Usage.ok(81); o.name = "Claude"; o.lastOk = nowR.addingTimeInterval(-6 * 3600); o.failing = true; o.stale = true; o.error = "토큰 갱신 대기"
         let ro = Design.row(o, logo: "claude", name: "Claude", ag: false, now: nowR, tz: tzR)
         check(ro.staleText == "6시간 전 값" && ro.weekly.tone == .stale && ro.detail.contains("토큰 갱신 대기"), "row: an old value is grey with its age and the reason in the tooltip")
@@ -680,7 +680,7 @@ do {
 do {
     L.mode = "en"; L.apply()
     check(!L.ko && L.t("가", "a") == "a", "en: L.t picks English")
-    check(MenuBarStrip.weekLabel == "Week" && MenuBarStrip.fiveHourLabel == "5h" && Design.usedUp == "Used up", "en: window labels and used up")
+    check(MenuBarStrip.weekLabel == "Week" && MenuBarStrip.fiveHourLabel == "5h" && Design.usedUp == "Limit reached", "en: window labels and used up")
     let five = MenuBarStrip.shortLabel(UsageWindow(key: "primary_window", used: 1, seconds: 18000, reset: nil))
     let day = MenuBarStrip.shortLabel(UsageWindow(key: "primary_window", used: 1, seconds: 86400, reset: nil))
     check(five == "5h" && day == "1d", "en: short window names")
@@ -705,13 +705,13 @@ do {
     let ce = Usage.ok(81); ce.name = "Claude"; ce.resetsAt = nowE.addingTimeInterval(5 * 86400); ce.lastOk = nowE
     ce.windows = [UsageWindow(key: "seven_day", used: 19, reset: ce.resetsAt), UsageWindow(key: "five_hour", used: 100, reset: nowE.addingTimeInterval(600))]
     let re = Design.row(ce, logo: "claude", name: "Claude", ag: false, now: nowE, tz: tzE)
-    check(re.weekly.label == "Week" && re.weekly.value == "81%" && re.five?.label == "5h" && re.five?.value == "Used up"
-          && re.detail.contains("5h Used up, refills ") && re.detail.contains("Week 81% left, resets "), "en: popover row")
+    check(re.weekly.label == "Week" && re.weekly.value == "81%" && re.five?.label == "5h" && re.five?.value == "Limit reached"
+          && re.detail.contains("5h Limit reached, refills ") && re.detail.contains("Week 81% left, resets "), "en: popover row")
     let ge = Usage.ok(79); ge.name = "Grok"; ge.lastOk = nowE
     check(Design.row(ge, logo: "grok", name: "Grok", ag: false, now: nowE, tz: tzE).five?.value == "None", "en: no 5-hour limit")
     let se = Usage.ok(80); se.lastOk = nowE; se.windows = [UsageWindow(key: "five_hour", used: 100, reset: nowE.addingTimeInterval(-60))]
     let rs = Design.row(se, logo: "claude", name: "Claude", ag: false, now: nowE, tz: tzE)
-    check(rs.five?.reset == "soon" && rs.detail.contains("5h Used up, refills soon"), "en: a passed reset reads soon")
+    check(rs.five?.reset == "soon" && rs.detail.contains("5h Limit reached, refills soon"), "en: a passed reset reads soon")
     let tip = MenuBarStrip.tooltip([MenuBarStrip.Entry(logo: "codex", name: "Codex", window: MenuBarStrip.weekLabel, remaining: 37, reset: nil, stale: true)], now: nowE)
     check(tip == "Codex Week 37% left (old value)", "en: menu bar tooltip")
     var mr = ManualRefresh(); _ = mr.begin()

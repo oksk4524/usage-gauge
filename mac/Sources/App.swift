@@ -480,7 +480,7 @@ enum HabitGate {
 }
 
 // shown in the log at launch, so a rebuilt and reinstalled app can be told apart from the previous one
-enum AppVersion { static let string = "1.0.7" }
+enum AppVersion { static let string = "1.0.8" }
 
 @main
 struct UsageGaugeMain {

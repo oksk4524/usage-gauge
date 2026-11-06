@@ -39,7 +39,7 @@ enum Design {
     // shared words (both languages); "확인 전" is the placeholder error of a service not read yet
     static var notChecked: String { L.t("확인 전", "Not read yet") }
     static func isNotChecked(_ e: String) -> Bool { e == "확인 전" || e == "Not read yet" }
-    static var usedUp: String { L.t("다 씀", "Used up") }
+    static var usedUp: String { L.t("소진", "Limit reached") }
     static var soon: String { L.t("곧", "soon") }
     static func left(_ pct: String) -> String { L.t(pct + "% 남음", pct + "% left") }
     static func refillsAt(_ t: String) -> String { L.t(t + "에 다시 차요", "refills " + t) }
