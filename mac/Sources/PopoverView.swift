@@ -362,7 +362,7 @@ enum Preview {
         for x in [codex, claude, grok, gem, agy] { x.lastOk = now }
         m.rows = Design.rows(main: [codex, claude, grok], ag: [gem, agy], loaded: true, now: now, tz: tz)
             + [Design.row(old, logo: "claude", name: L.t("Claude (오래된 값 예시)", "Claude (old value example)"), ag: false, now: now, tz: tz)]
-        m.todo = Design.Todo(name: L.t("\"[유령마작] 점검, 스토리, 최적화\"", "\"[Ghost Mahjong] review, story, tuning\""), tokens: Design.compact(852373) + L.t(" 토큰", " tokens"))
+        m.todo = Design.Todo(name: L.t("\"[랜딩 페이지] 점검, 문구, 최적화\"", "\"[Landing page] review, copy, tuning\""), tokens: Design.compact(852373) + L.t(" 토큰", " tokens"))
         return m
     }
 
@@ -422,7 +422,11 @@ enum Preview {
                 let host = NSHostingView(rootView: v)
                 host.frame = NSRect(origin: .zero, size: host.fittingSize)
                 host.layoutSubtreeIfNeeded()
-                if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                // 2x pixels, like a Retina screen (the default cache is 1x)
+                if let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(host.bounds.width * 2), pixelsHigh: Int(host.bounds.height * 2),
+                                                 bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                                 colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) {
+                    bitmap.size = host.bounds.size
                     host.cacheDisplay(in: host.bounds, to: bitmap)
                     if let data = bitmap.representation(using: .png, properties: [:]) {
                         try? data.write(to: URL(fileURLWithPath: p)); print(p)
