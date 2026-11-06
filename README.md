@@ -41,7 +41,7 @@ The macOS version is a native menu bar app with the same readings as the Windows
 
 It's genuinely lightweight, so you can keep it on while you work.
 
-- **Windows:** native C# on .NET Framework, about 146 KB for the installer. Quota checks every five minutes for Codex, Claude and Grok, fifteen for Antigravity, paused after 15 minutes of inactivity.
+- **Windows:** native C# on .NET Framework, about 370 KB for the installer. Quota checks every five minutes for Codex, Claude and Grok, fifteen for Antigravity, paused after 15 minutes of inactivity.
 - **macOS:** native Swift, no Electron or Node.js runtime. In a nine-minute measurement on a Mac Studio it used about 33 MB of memory and well under 1% CPU. It checks again soon after you use one of these tools, otherwise every three minutes (Antigravity: twenty).
 
 Antigravity uses its own CLI for readings, which adds work during those refreshes.
@@ -73,8 +73,6 @@ Logins are only read, never changed. When one expires, sign in again through the
 It starts with Windows by default. After quitting, reopen it from the Start menu. Remove it through **Settings > Apps > UsageGauge**.
 
 The installer is **unsigned**, so Windows or antivirus software may warn. Check the [release and SHA-256](https://github.com/oksk4524/usage-gauge/releases/latest) before deciding to run it. Do not disable antivirus.
-
-The 1.0.0 installer still includes an optional Claude/Grok login renewal setting, off by default. The current source has removed it; the next installer will not have it.
 
 **[Download for Windows](https://github.com/oksk4524/usage-gauge/releases/latest/download/UsageGauge-Setup.exe)**
 
