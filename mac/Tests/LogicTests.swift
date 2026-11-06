@@ -4,6 +4,8 @@
 import Foundation
 
 Log.enabled = false
+// every assertion below runs in Korean, whatever this Mac's language; the English block near the end switches
+L.mode = "ko"; L.ko = true
 var passed = 0
 func check(_ cond: Bool, _ name: String, file: String = #file, line: Int = #line) {
     if cond { passed += 1; print("PASS " + name) } else { print("FAIL " + name + " (line \(line))"); exit(1) }
@@ -673,5 +675,61 @@ do {
     check(!batch.text(states: states, now: now)!.contains("나머지 완료"), "manual: total failure never claims any success")
     let model = PopoverModel()
     check(model.refreshStatus == nil && !model.refreshFailed, "manual: normal UI unchanged before a click")
+}
+// ---- English UI (L.ko = false), then back to Korean ----
+do {
+    L.mode = "en"; L.apply()
+    check(!L.ko && L.t("가", "a") == "a", "en: L.t picks English")
+    check(MenuBarStrip.weekLabel == "Week" && MenuBarStrip.fiveHourLabel == "5h" && Design.usedUp == "Used up", "en: window labels and used up")
+    let five = MenuBarStrip.shortLabel(UsageWindow(key: "primary_window", used: 1, seconds: 18000, reset: nil))
+    let day = MenuBarStrip.shortLabel(UsageWindow(key: "primary_window", used: 1, seconds: 86400, reset: nil))
+    check(five == "5h" && day == "1d", "en: short window names")
+    check(Design.when(atS(10, 31, 0, 0), now: nowS, tz: tzS) == "Midnight" && Design.when(atS(11, 6, 0, 0), now: nowS, tz: tzS) == "11/6"
+          && Design.when(atS(10, 30, 21, 5), now: nowS, tz: tzS) == "Today 21:05" && Design.when(atS(10, 31, 9, 0), now: nowS, tz: tzS) == "Tmrw 09:00", "en: reset time texts")
+    check(Design.header(lastCheck: nowS, main: [ca, cb, cc], now: nowS) == "Checked just now, 3 accounts", "en: header")
+    check(freshnessText(nowS.addingTimeInterval(-300), now: nowS) == "Checked 5m ago", "en: freshness")
+    check(Design.ageText(nowS, now: nowS) == "Just read" && Design.ageText(nowS.addingTimeInterval(-6 * 3600), now: nowS) == "6h old", "en: value age")
+    check(Design.compact(1_199_522_966) == "1.2B" && Design.compact(852373) == "852K" && Design.compact(950000) == "950K"
+          && Design.compact(1_234_567) == "1.2M" && Design.compact(999) == "999", "en: compact numbers K, M, B")
+    check(MenuBarStrip.until(nowS.addingTimeInterval(200 * 60), now: nowS) == "in 3h 20m" && MenuBarStrip.until(nowS.addingTimeInterval(900), now: nowS) == "in 15m"
+          && MenuBarStrip.until(nowS.addingTimeInterval(2 * 86400 + 16 * 3600), now: nowS) == "in 2d 16h", "en: countdowns")
+    check(MenuBarStrip.refillLabel(atS(11, 2, 12, 0), now: nowS, tz: tzS) == "Mon" && MenuBarStrip.refillLabel(atS(10, 31, 14, 0), now: nowS, tz: tzS) == "2PM"
+          && MenuBarStrip.refillLabel(atS(10, 31, 0, 30), now: nowS, tz: tzS) == "12AM" && MenuBarStrip.refillLabel(atS(10, 30, 17, 0), now: nowS, tz: tzS) == "Soon", "en: menu bar refill day and hour")
+    // an error made in Korean before a switch still maps to the right short status, and the other way round
+    check(Design.shortStatus(Quota.fail("로그인 만료(401): 공식 도구로 다시 로그인")) == "Sign in again"
+          && Design.shortStatus(Quota.fail("토큰 갱신 대기: Claude Code를 한 번 열어 주세요")) == "Token expired"
+          && Design.shortStatus(Quota.fail("확인 전")) == "Not read yet" && Design.shortStatus(Quota.fail("키체인 오류 1")) == "Allow keychain", "en: Korean-made errors map after a switch")
+    check(Usage.httpError(429).error == "Rate limited (429), retrying soon" && Usage.httpError(401).error == "Request failed (HTTP 401)"
+          && Usage.authError(401).hasPrefix("Login expired") && Design.shortStatus(Quota.fail(Usage.authError(403))) == "Access denied", "en: errors")
+    let nowE = Date(), tzE = TimeZone(identifier: "Asia/Seoul")!
+    let ce = Usage.ok(81); ce.name = "Claude"; ce.resetsAt = nowE.addingTimeInterval(5 * 86400); ce.lastOk = nowE
+    ce.windows = [UsageWindow(key: "seven_day", used: 19, reset: ce.resetsAt), UsageWindow(key: "five_hour", used: 100, reset: nowE.addingTimeInterval(600))]
+    let re = Design.row(ce, logo: "claude", name: "Claude", ag: false, now: nowE, tz: tzE)
+    check(re.weekly.label == "Week" && re.weekly.value == "81%" && re.five?.label == "5h" && re.five?.value == "Used up"
+          && re.detail.contains("5h Used up, refills ") && re.detail.contains("Week 81% left, resets "), "en: popover row")
+    let ge = Usage.ok(79); ge.name = "Grok"; ge.lastOk = nowE
+    check(Design.row(ge, logo: "grok", name: "Grok", ag: false, now: nowE, tz: tzE).five?.value == "None", "en: no 5-hour limit")
+    let se = Usage.ok(80); se.lastOk = nowE; se.windows = [UsageWindow(key: "five_hour", used: 100, reset: nowE.addingTimeInterval(-60))]
+    let rs = Design.row(se, logo: "claude", name: "Claude", ag: false, now: nowE, tz: tzE)
+    check(rs.five?.reset == "soon" && rs.detail.contains("5h Used up, refills soon"), "en: a passed reset reads soon")
+    let tip = MenuBarStrip.tooltip([MenuBarStrip.Entry(logo: "codex", name: "Codex", window: MenuBarStrip.weekLabel, remaining: 37, reset: nil, stale: true)], now: nowE)
+    check(tip == "Codex Week 37% left (old value)", "en: menu bar tooltip")
+    var mr = ManualRefresh(); _ = mr.begin()
+    var sts = Dictionary(uniqueKeysWithValues: Provider.allCases.map { ($0, ProviderState()) })
+    sts[.codex]!.inFlight = true
+    sts[.claude]!.lastStart = nowE; sts[.claude]!.floorGap = 90; sts[.claude]!.requestGap = 10
+    let mt = mr.text(states: sts, now: nowE)!
+    check(mt.contains("Codex: checking…") && mt.contains("Claude: checks in 1m 30s") && mt.contains("Grok: starting…"), "en: refresh feedback")
+    for p in Provider.allCases { mr.finish(p, success: p != .grok, now: nowE) }
+    check(mr.text(states: sts, now: nowE) == "Grok failed, others done", "en: refresh partial failure")
+    _ = mr.begin(); for p in Provider.allCases { mr.finish(p, success: true, now: nowE) }
+    check(mr.text(states: sts, now: nowE) == "Refresh done", "en: refresh done")
+    check(HabitGate.waitText(3) == "You can run it again in 3 min" && HabitGate.confirmTitle == "Run the AI check?", "en: AI check texts")
+    let todoE = Design.todo(snapshot: ["datasets": [["efficiency": ["status": "observed", "recentSessions": [["session": "s1", "lastContext": 852373, "lastAt": ISO8601DateFormatter().string(from: Date().addingTimeInterval(-60)), "project": "p1"]]]]]],
+                            names: [:], helpers: [], now: Date())
+    check(todoE != nil && (todoE!.tokens == "852K tokens" && todoE!.name == "Chat in an unnamed folder"), "en: to-do item")
+    check(Design.notChecked == "Not read yet" && Design.isNotChecked("확인 전") && Design.isNotChecked("Not read yet"), "en: placeholder in both languages")
+    L.mode = "ko"; L.ko = true
+    check(MenuBarStrip.weekLabel == "주간" && Design.shortStatus(Quota.fail("Login expired (401): sign in again with the official tool")) == "다시 로그인", "ko again: English-made errors map back")
 }
 print("RESULT \(passed) mac logic tests passed")

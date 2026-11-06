@@ -28,7 +28,7 @@ final class Quota {
     var stale = false          // failing AND last good values are old
     var failing = false        // most recent fetch failed
     var lastOk: Date?
-    var error: String?         // Korean, shown in the menu
+    var error: String?         // shown in the popover, in the UI language when it was made (L)
     var transient = false      // network / rate limit / server: heals by itself
     var rateLimited = false    // HTTP 429 (backs off at least 2 minutes, Retry-After respected)
     var noLogin = false        // the official tool has no saved login on this Mac
@@ -45,7 +45,7 @@ final class Quota {
         let q = Quota(); q.error = msg; q.transient = transient; return q
     }
     static func noLoginFound() -> Quota {
-        let q = Quota(); q.error = "로그인 없음"; q.noLogin = true; return q
+        let q = Quota(); q.error = L.t("로그인 없음", "No login"); q.noLogin = true; return q
     }
 }
 
@@ -87,7 +87,7 @@ enum Usage {
     static func codexResult(_ status: Int, _ body: Data?) -> Quota {
         if status == 401 || status == 403 { return .fail(authError(status)) }
         if status != 200 { return httpError(status) }
-        guard let j = parse(body), let rl = j["rate_limit"] as? [String: Any] else { return .fail("응답 형식이 바뀌었어요") }
+        guard let j = parse(body), let rl = j["rate_limit"] as? [String: Any] else { return .fail(formatChanged) }
         var weekly: Quota?; var extra: [String] = []; var wins: [UsageWindow] = []
         for key in ["primary_window", "secondary_window"] {
             guard let w = rl[key] as? [String: Any] else { continue }
@@ -100,17 +100,17 @@ enum Usage {
             weekly = ok(100 - used)
             if weekly!.ok { weekly!.resetsAt = reset }
         }
-        guard let q = weekly else { return .fail("주간 한도를 찾지 못했어요") }
+        guard let q = weekly else { return .fail(noWeekly) }
         if !q.ok { return q }
         if !extra.isEmpty { q.extra = extra.joined(separator: ", ") }
         q.windows = wins
         return q
     }
     static func windowName(_ secs: Double) -> String {
-        if secs == 18000 { return "5시간 사용" }
-        if secs == 86400 { return "1일 사용" }
-        if !secs.isNaN && secs > 0 { return "\(Int((secs / 3600).rounded()))시간 사용" }
-        return "다른 한도 사용"
+        if secs == 18000 { return L.t("5시간 사용", "5h used") }
+        if secs == 86400 { return L.t("1일 사용", "1d used") }
+        if !secs.isNaN && secs > 0 { return L.t("\(Int((secs / 3600).rounded()))시간 사용", "\(Int((secs / 3600).rounded()))h used") }
+        return L.t("다른 한도 사용", "Other limit used")
     }
 
     // ---------- login identity ----------
@@ -152,7 +152,7 @@ enum Usage {
     }
     // 401 with a token whose own expiry has passed: the official tool refreshes it the next time it runs.
     static func rejected(_ service: String, _ status: Int, _ expires: Date?) -> String {
-        if status == 401, let e = expires, e <= Date() { return "토큰 갱신 대기(401): \(service)를 한 번 열어 주세요" }
+        if status == 401, let e = expires, e <= Date() { return L.t("토큰 갱신 대기(401): \(service)를 한 번 열어 주세요", "Token expired (401): open \(service) once") }
         return authError(status)
     }
 
@@ -169,17 +169,17 @@ enum Usage {
         switch kc {
         case .found(let data):
             if let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] { return claudeLogin(root) }
-            return Login(error: "키체인 로그인 정보를 읽지 못했어요")
+            return Login(error: L.t("키체인 로그인 정보를 읽지 못했어요", "Keychain login could not be read"))
         case .denied:
             keychainDenied = true
-            return Login(error: "키체인 읽기가 허용되지 않았어요 (새로고침에서 다시 묻기)")
+            return Login(error: keychainNotAllowed)
         case .notFound, .skipped:
             break
         case .error(let s):
-            if !FileManager.default.fileExists(atPath: claudeCredFile) { return Login(error: "키체인 오류 \(s)") }
+            if !FileManager.default.fileExists(atPath: claudeCredFile) { return Login(error: L.t("키체인 오류 \(s)", "Keychain error \(s)")) }
         }
         guard let root = readJson(claudeCredFile) else {
-            if case .skipped = kc { return Login(error: "키체인 읽기가 허용되지 않았어요 (새로고침에서 다시 묻기)") }
+            if case .skipped = kc { return Login(error: keychainNotAllowed) }
             return nil
         }
         return claudeLogin(root)
@@ -252,7 +252,7 @@ enum Usage {
             guard let login = l, login.error == nil, let a = login.access else { err = l?.error; return nil }
             // a token whose own expiry has passed only earns a 401, and repeated 401s end in 429 for an hour:
             // don't ask until Claude Code has refreshed it (the keychain is re-read on every lookup meanwhile)
-            if let e = login.expires, e <= Date() { err = "토큰 갱신 대기: Claude Code를 한 번 열어 주세요"; return nil }
+            if let e = login.expires, e <= Date() { err = L.t("토큰 갱신 대기: Claude Code를 한 번 열어 주세요", "Token expired: open Claude Code once"); return nil }
             used = login; return a
         }
         if st < 0 && err == nil && !sawLogin { return .noLoginFound() }
@@ -267,12 +267,12 @@ enum Usage {
         return tag(q, who?[1] ?? nil, who?[0] ?? nil, cred)
     }
     static func claudeResult(_ j: [String: Any]?, _ st: Int, _ err: String?, _ used: Login?) -> Quota {
-        if st < 0 { return .fail(err ?? "로그인 없음") }
+        if st < 0 { return .fail(err ?? L.t("로그인 없음", "No login")) }
         if st == 401 || st == 403 { return .fail(rejected("Claude", st, used?.expires)) }
         if st != 200 { return httpError(st) }
-        guard let j = j, let w = j["seven_day"] as? [String: Any] else { return .fail("응답 형식이 바뀌었어요") }
+        guard let j = j, let w = j["seven_day"] as? [String: Any] else { return .fail(formatChanged) }
         let used7 = num(w, "utilization")
-        if used7.isNaN { return .fail("주간 한도를 찾지 못했어요") }
+        if used7.isNaN { return .fail(noWeekly) }
         let q = ok(100 - used7)
         if !q.ok { return q }
         q.resetsAt = w["resets_at"].flatMap { parseTime($0) }
@@ -282,7 +282,7 @@ enum Usage {
             guard let x = j[k] as? [String: Any] else { continue }
             let u = num(x, "utilization"); if u.isNaN { continue }
             q.windows.append(UsageWindow(key: k, used: u, reset: x["resets_at"].flatMap { parseTime($0) }))
-            let label = k == "five_hour" ? "5시간 사용" : k == "seven_day_opus" ? "주간 Opus 사용" : "주간 Sonnet 사용"
+            let label = k == "five_hour" ? L.t("5시간 사용", "5h used") : k == "seven_day_opus" ? L.t("주간 Opus 사용", "Weekly Opus used") : L.t("주간 Sonnet 사용", "Weekly Sonnet used")
             extra.append(label + " " + percentText(u) + "%")
         }
         if !extra.isEmpty { q.extra = extra.joined(separator: ", ") }
@@ -296,7 +296,7 @@ enum Usage {
         for (k, v) in root where k.hasPrefix("https://auth.x.ai::") {
             if let d = v as? [String: Any] { count += 1; entry = d }
         }
-        if count != 1 { return count > 1 ? Login(error: "auth.json에 Grok 계정이 여러 개라 어느 것이 쓰이는지 알 수 없어요") : nil }
+        if count != 1 { return count > 1 ? Login(error: L.t("auth.json에 Grok 계정이 여러 개라 어느 것이 쓰이는지 알 수 없어요", "auth.json has several Grok accounts, so the one in use is unknown")) : nil }
         let e = entry!
         let uid = str(e, "user_id") ?? str(e, "principal_id")
         var label = str(e, "email") ?? str(e, "first_name")
@@ -319,16 +319,16 @@ enum Usage {
         return tag(q, u.account, u.accountKey, hash(u.access))
     }
     static func grokResult(_ j: [String: Any]?, _ st: Int, _ err: String?, _ login: Login?) -> Quota {
-        if st < 0 { return .fail(err ?? "로그인 없음") }
+        if st < 0 { return .fail(err ?? L.t("로그인 없음", "No login")) }
         if st == 401 || st == 403 { return .fail(rejected("Grok", st, login?.expires)) }
         if st != 200 { return httpError(st) }
-        guard let j = j, let c = j["config"] as? [String: Any] else { return .fail("응답 형식이 바뀌었어요") }
+        guard let j = j, let c = j["config"] as? [String: Any] else { return .fail(formatChanged) }
         guard let period = c["currentPeriod"] as? [String: Any], str(period, "type") == "USAGE_PERIOD_TYPE_WEEKLY" else {
-            return .fail("주간 기간을 찾지 못했어요")
+            return .fail(L.t("주간 기간을 찾지 못했어요", "Weekly period not found"))
         }
         var used = 0.0                                                  // the field is omitted while nothing is used
         if let v = c["creditUsagePercent"], !(v is NSNull) {
-            used = num(c, "creditUsagePercent"); if used.isNaN { return .fail("사용량 값이 숫자가 아니에요") }
+            used = num(c, "creditUsagePercent"); if used.isNaN { return .fail(L.t("사용량 값이 숫자가 아니에요", "Usage value is not a number")) }
         }
         let q = ok(100 - used)
         if !q.ok { return q }
@@ -355,17 +355,21 @@ enum Usage {
     // ---------- helpers ----------
     static func ok(_ remaining: Double) -> Quota {
         // over-quota (used > 100%) shows as 0% left; only absurd values are rejected
-        if remaining.isNaN || remaining.isInfinite || remaining < -1000 || remaining > 100.5 { return .fail("값이 올바르지 않아요") }
+        if remaining.isNaN || remaining.isInfinite || remaining < -1000 || remaining > 100.5 { return .fail(L.t("값이 올바르지 않아요", "Invalid value")) }
         let q = Quota(); q.ok = true; q.remaining = max(0, min(100, remaining)); return q
     }
     static func authError(_ status: Int) -> String {
-        status == 401 ? "로그인 만료(401): 공식 도구로 다시 로그인" : "접근 거부(403): 계정 권한 확인"
+        status == 401 ? L.t("로그인 만료(401): 공식 도구로 다시 로그인", "Login expired (401): sign in again with the official tool")
+            : L.t("접근 거부(403): 계정 권한 확인", "Access denied (403): check the account's access")
     }
+    static var formatChanged: String { L.t("응답 형식이 바뀌었어요", "The response format changed") }
+    static var noWeekly: String { L.t("주간 한도를 찾지 못했어요", "Weekly limit not found") }
+    static var keychainNotAllowed: String { L.t("키체인 읽기가 허용되지 않았어요 (새로고침에서 다시 묻기)", "Keychain access was not allowed (Refresh asks again)") }
     static func httpError(_ status: Int) -> Quota {
-        if status <= 0 { return .fail("시간 초과(네트워크)", transient: true) }
-        if status == 429 { let q = Quota.fail("요청 제한(429), 곧 다시 시도", transient: true); q.rateLimited = true; return q }
-        if status >= 500 { return .fail("서버 오류 \(status)", transient: true) }
-        return .fail("요청 실패(HTTP \(status))")
+        if status <= 0 { return .fail(L.t("시간 초과(네트워크)", "Timed out (network)"), transient: true) }
+        if status == 429 { let q = Quota.fail(L.t("요청 제한(429), 곧 다시 시도", "Rate limited (429), retrying soon"), transient: true); q.rateLimited = true; return q }
+        if status >= 500 { return .fail(L.t("서버 오류 \(status)", "Server error \(status)"), transient: true) }
+        return .fail(L.t("요청 실패(HTTP \(status))", "Request failed (HTTP \(status))"))
     }
     static func remainingNumber(_ v: Double) -> String {
         if v > 0 && v < 1 { return "<1" }

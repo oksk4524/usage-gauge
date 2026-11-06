@@ -36,17 +36,22 @@ enum MenuBarStrip {
     // revised 2026-10-30 (owner's choice): the menu bar number and the popover ring both show the WEEKLY limit.
     // Quota.remaining already is the weekly value: Claude seven_day, Codex the 604800 s window, Grok its weekly
     // period, an Antigravity item the lowest of its weekly buckets (5-hour buckets never count there).
-    static func weekly(_ q: Quota) -> Window { Window(label: "주간", remaining: q.remaining, reset: q.resetsAt) }
+    static func weekly(_ q: Quota) -> Window { Window(label: weekLabel, remaining: q.remaining, reset: q.resetsAt) }
+
+    // window labels: short, so the popover's 30 pt label column fits them in English too
+    static var weekLabel: String { L.t("주간", "Week") }
+    static var fiveHourLabel: String { L.t("5시간", "5h") }
 
     // the name of a general window; nil for weekly ones and model-only pools (weekly Opus, Sonnet)
     static func shortLabel(_ w: UsageWindow) -> String? {
         switch w.key {
-        case "five_hour": return "5시간"
+        case "five_hour": return fiveHourLabel
         case "primary_window", "secondary_window":
             if w.seconds == 604800 { return nil }
-            if w.seconds == 18000 { return "5시간" }
+            if w.seconds == 18000 { return fiveHourLabel }
             if !w.seconds.isNaN && w.seconds > 0 {
-                return w.seconds.truncatingRemainder(dividingBy: 86400) == 0 ? "\(Int(w.seconds / 86400))일" : "\(Int((w.seconds / 3600).rounded()))시간"
+                return w.seconds.truncatingRemainder(dividingBy: 86400) == 0 ? L.t("\(Int(w.seconds / 86400))일", "\(Int(w.seconds / 86400))d")
+                    : L.t("\(Int((w.seconds / 3600).rounded()))시간", "\(Int((w.seconds / 3600).rounded()))h")
             }
             return nil
         default: return nil
@@ -96,6 +101,11 @@ enum MenuBarStrip {
     }
 
     static let weekdays = ["일", "월", "화", "수", "목", "금", "토"]
+    static let weekdaysEn = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    // weekday 1 = Sunday (Calendar)
+    static func weekdayName(_ weekday: Int) -> String { (L.ko ? weekdays : weekdaysEn)[weekday - 1] }
+    // the hour alone: "14시"; English "2PM"
+    static func hourName(_ h: Int) -> String { L.ko ? "\(h)시" : "\(h % 12 == 0 ? 12 : h % 12)\(h < 12 ? "AM" : "PM")" }
     static func calendar(_ tz: TimeZone) -> Calendar { var c = Calendar(identifier: .gregorian); c.timeZone = tz; return c }
 
     // menu bar text for a used-up service: the local weekday it fills again ("월"), or the hour when that is
@@ -103,10 +113,10 @@ enum MenuBarStrip {
     static func refillLabel(_ reset: Date?, now: Date = Date(), tz: TimeZone = .current) -> String {
         guard let r = reset else { return "0" }
         let left = r.timeIntervalSince(now)
-        if left <= 0 { return "곧" }
+        if left <= 0 { return L.t("곧", "Soon") }
         let c = calendar(tz)
-        if left < 86400 { return "\(c.component(.hour, from: r))시" }
-        return weekdays[c.component(.weekday, from: r) - 1]
+        if left < 86400 { return hourName(c.component(.hour, from: r)) }
+        return weekdayName(c.component(.weekday, from: r))
     }
 
     // tooltip time: "월 12:00"; within 24 hours "오늘 14:58" / "내일 09:00"
@@ -114,10 +124,10 @@ enum MenuBarStrip {
         let c = calendar(tz)
         let hm = String(format: "%02d:%02d", c.component(.hour, from: r), c.component(.minute, from: r))
         if r.timeIntervalSince(now) < 86400 {
-            if c.isDate(r, inSameDayAs: now) { return "오늘 " + hm }
-            if let t = c.date(byAdding: .day, value: 1, to: now), c.isDate(r, inSameDayAs: t) { return "내일 " + hm }
+            if c.isDate(r, inSameDayAs: now) { return L.t("오늘 ", "today ") + hm }
+            if let t = c.date(byAdding: .day, value: 1, to: now), c.isDate(r, inSameDayAs: t) { return L.t("내일 ", "tomorrow ") + hm }
         }
-        return weekdays[c.component(.weekday, from: r) - 1] + " " + hm
+        return weekdayName(c.component(.weekday, from: r)) + " " + hm
     }
 
     // "01:19": a shorter window always refills within a day, so the clock time alone is clear
@@ -128,20 +138,25 @@ enum MenuBarStrip {
 
     // "5시간 다 씀, 01:19에 다시 차요"
     static func blockedLine(_ w: Window, now: Date = Date(), tz: TimeZone = .current) -> String {
-        var s = w.label + " 다 씀"
-        if let r = w.reset { s += r > now ? ", " + clock(r, tz: tz) + "에 다시 차요" : ", 곧 다시 차요" }
+        var s = w.label + " " + Design.usedUp
+        if let r = w.reset { s += ", " + (r > now ? Design.refillsAt(clock(r, tz: tz)) : Design.refillsSoon) }
         return s
     }
 
     // "2일 16시간 뒤", "3시간 20분 뒤", "15분 뒤"
     static func until(_ d: Date, now: Date = Date()) -> String {
         let mins = Int((d.timeIntervalSince(now) / 60).rounded())
-        if mins <= 0 { return "곧" }
-        if mins < 60 { return "\(mins)분 뒤" }
-        if mins < 24 * 60 { return mins % 60 == 0 ? "\(mins / 60)시간 뒤" : "\(mins / 60)시간 \(mins % 60)분 뒤" }
+        if mins <= 0 { return L.t("곧", "soon") }
+        let ko = L.ko
+        if mins < 60 { return ko ? "\(mins)분 뒤" : "in \(mins)m" }
+        if mins < 24 * 60 {
+            if ko { return mins % 60 == 0 ? "\(mins / 60)시간 뒤" : "\(mins / 60)시간 \(mins % 60)분 뒤" }
+            return mins % 60 == 0 ? "in \(mins / 60)h" : "in \(mins / 60)h \(mins % 60)m"
+        }
         var days = mins / 1440, hours = Int((Double(mins % 1440) / 60).rounded())
         if hours == 24 { days += 1; hours = 0 }
-        return hours == 0 ? "\(days)일 뒤" : "\(days)일 \(hours)시간 뒤"
+        if ko { return hours == 0 ? "\(days)일 뒤" : "\(days)일 \(hours)시간 뒤" }
+        return hours == 0 ? "in \(days)d" : "in \(days)d \(hours)h"
     }
 
     // one line per item, in the menu bar order:
@@ -151,10 +166,10 @@ enum MenuBarStrip {
         es.map { e in
             var s = e.name + " " + e.window + " "
             if e.remaining <= 0 {
-                s += "다 씀"
-                if let r = e.reset { s += r > now ? ", " + refillTime(r, now: now, tz: tz) + "에 다시 차요" : ", 곧 다시 차요" }
-            } else { s += Usage.remainingNumber(e.remaining) + "% 남음" }
-            if e.stale { s += " (오래된 값)" }
+                s += Design.usedUp
+                if let r = e.reset { s += ", " + (r > now ? Design.refillsAt(refillTime(r, now: now, tz: tz)) : Design.refillsSoon) }
+            } else { s += Design.left(Usage.remainingNumber(e.remaining)) }
+            if e.stale { s += L.t(" (오래된 값)", " (old value)") }
             if let b = e.blocked { s += "\n" + blockedLine(b, now: now, tz: tz) }
             return s
         }.joined(separator: "\n")

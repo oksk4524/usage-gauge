@@ -205,21 +205,23 @@ struct ManualRefresh {
             let waiting = Provider.allCases.filter { pending.contains($0) }.map { p in
                 let s = states[p] ?? ProviderState()
                 switch Sched.decide(s, now: now, idle: RefreshPolicy.idle(p)) {
-                case .busy: return "\(p.name) 조회 중…"
-                case .start: return "\(p.name) 조회 준비 중…"
+                case .busy: return L.t("\(p.name) 조회 중…", "\(p.name): checking…")
+                case .start: return L.t("\(p.name) 조회 준비 중…", "\(p.name): starting…")
                 case .wait(let at):
                     let seconds = max(1, Int(ceil(at.timeIntervalSince(now))))
-                    let wait = seconds < 60 ? "\(seconds)초" : "\(seconds / 60)분 \(seconds % 60)초"
-                    return "\(p.name) \(wait) 뒤 조회" + (s.rateLimited ? " (요청 제한)" : "")
+                    let wait = L.ko ? (seconds < 60 ? "\(seconds)초" : "\(seconds / 60)분 \(seconds % 60)초")
+                                    : (seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(seconds % 60)s")
+                    return L.t("\(p.name) \(wait) 뒤 조회", "\(p.name): checks in \(wait)") + (s.rateLimited ? L.t(" (요청 제한)", " (rate limited)") : "")
                 }
             }.joined(separator: "\n")
-            let errors = Provider.allCases.filter { failed.contains($0) }.map { "\($0.name) 조회 실패" }
+            let errors = Provider.allCases.filter { failed.contains($0) }.map { L.t("\($0.name) 조회 실패", "\($0.name): check failed") }
             return ([waiting] + errors).joined(separator: "\n")
         }
         guard let end = finishedAt, now.timeIntervalSince(end) < 15 else { return nil }
-        if failed.isEmpty { return "새로고침 완료" }
+        if failed.isEmpty { return L.t("새로고침 완료", "Refresh done") }
         let names = Provider.allCases.filter { failed.contains($0) }.map { $0.name }.joined(separator: ", ")
-        return "\(names) 조회 실패" + (failed.count < Provider.allCases.count ? ", 나머지 완료" : "")
+        let some = failed.count < Provider.allCases.count
+        return L.t("\(names) 조회 실패" + (some ? ", 나머지 완료" : ""), "\(names) failed" + (some ? ", others done" : ""))
     }
 }
 
@@ -249,5 +251,6 @@ extension Fetch {
 func freshnessText(_ t: Date?, now: Date = Date()) -> String? {
     guard let t = t else { return nil }
     let m = Int(max(0, now.timeIntervalSince(t)) / 60)
+    if !L.ko { return m < 1 ? "Checked just now" : m < 60 ? "Checked \(m)m ago" : "Checked \(m / 60)h ago" }
     return m < 1 ? "방금 확인" : m < 60 ? "\(m)분 전 확인" : "\(m / 60)시간 전 확인"
 }

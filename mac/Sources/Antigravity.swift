@@ -20,7 +20,7 @@ enum Antigravity {
     }
 
     static func notInstalled() -> [Quota] {
-        let q = Quota(); q.name = "Antigravity"; q.error = "설치 안 됨"; q.notInstalled = true
+        let q = Quota(); q.name = "Antigravity"; q.error = L.t("설치 안 됨", "Not installed"); q.notInstalled = true
         return [q]
     }
 
@@ -42,10 +42,10 @@ enum Antigravity {
             let a = Quota.fail(m, transient: transient), b = Quota.fail(m, transient: transient)
             a.name = geminiName; b.name = otherName; return [a, b]
         }
-        if let f = fail { return both(f, transient: f.hasPrefix("시간 초과") || f.hasPrefix("빈 응답")) }
+        if let f = fail { return both(f.text, transient: f.transient) }
         var buckets: [String: [String: Any]] = [:]
         guard let cmd = parsed?["command"] as? [String: Any], let data = cmd["data"] as? [String: Any],
-              let groups = data["groups"] as? [Any] else { return both("agy 응답 형식이 바뀌었어요") }
+              let groups = data["groups"] as? [Any] else { return both(L.t("agy 응답 형식이 바뀌었어요", "agy's response format changed")) }
         for go in groups {
             guard let g = go as? [String: Any], let bs = g["buckets"] as? [Any] else { continue }
             for bo in bs { if let b = bo as? [String: Any], let id = Usage.str(b, "id") { buckets[id] = b } }
@@ -69,7 +69,7 @@ enum Antigravity {
     // weekly and 5-hour bucket is kept as a window, so the menu bar shows the one that binds right now.
     static func group(_ buckets: [String: [String: Any]], _ ids: [String], _ name: String) -> Quota {
         func err(_ m: String) -> Quota { let q = Quota.fail(m); q.name = name; return q }
-        if ids.isEmpty { return err("한도를 찾지 못했어요") }
+        if ids.isEmpty { return err(L.t("한도를 찾지 못했어요", "No limit found")) }
         var wins: [UsageWindow] = [], weekly: (rem: Double, reset: Date?)?, firstErr: String?
         for id in ids {
             guard let b = buckets[id] else { continue }
@@ -77,11 +77,11 @@ enum Antigravity {
             switch Usage.str(b, "window") ?? "weekly" {
             case "weekly": key = "weekly"
             case "5h": key = "five_hour"
-            default: firstErr = firstErr ?? "주간 한도가 아니에요"; continue
+            default: firstErr = firstErr ?? notWeekly; continue
             }
             let frac = Usage.num(b, "remaining_fraction")
-            if frac.isNaN { firstErr = firstErr ?? "남은 양이 없어요"; continue }
-            if frac < -0.005 || frac > 1.005 { firstErr = firstErr ?? "값이 올바르지 않아요"; continue }
+            if frac.isNaN { firstErr = firstErr ?? L.t("남은 양이 없어요", "No remaining amount"); continue }
+            if frac < -0.005 || frac > 1.005 { firstErr = firstErr ?? L.t("값이 올바르지 않아요", "Invalid value"); continue }
             let rem = max(0, min(100, frac * 100)), reset = b["reset_time"].flatMap { Usage.parseTime($0) }
             wins.append(UsageWindow(key: key, used: 100 - rem, reset: reset))
             if key == "weekly" {
@@ -90,13 +90,18 @@ enum Antigravity {
                 } else { weekly = (rem, reset) }
             }
         }
-        guard let w = weekly else { return err(firstErr ?? "주간 한도가 아니에요") }
+        guard let w = weekly else { return err(firstErr ?? notWeekly) }
         let q = Quota(); q.name = name; q.ok = true; q.remaining = w.rem; q.resetsAt = w.reset; q.windows = wins
         return q
     }
 
-    // Runs the CLI with one hard deadline. Returns (failure text or nil, parsed first JSON line).
-    static func runCli(_ exe: String, _ args: [String], _ workDir: String) -> (String?, [String: Any]?) {
+    static var notWeekly: String { L.t("주간 한도가 아니에요", "Not a weekly limit") }
+
+    // a failed run: what to show, and whether it heals by itself (a timeout or an empty answer)
+    struct CliFailure { var text: String; var transient = false }
+
+    // Runs the CLI with one hard deadline. Returns (failure or nil, parsed first JSON line).
+    static func runCli(_ exe: String, _ args: [String], _ workDir: String) -> (CliFailure?, [String: Any]?) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: exe); p.arguments = args
         p.currentDirectoryURL = URL(fileURLWithPath: workDir)
@@ -117,19 +122,23 @@ enum Antigravity {
         errPipe.fileHandleForReading.readabilityHandler = { h in if h.availableData.isEmpty { h.readabilityHandler = nil } }
         p.terminationHandler = { _ in exited.signal() }
         let started = Date()
-        do { try p.run() } catch { return ("agy를 실행하지 못했어요", nil) }
+        do { try p.run() } catch { return (CliFailure(text: L.t("agy를 실행하지 못했어요", "agy could not be started")), nil) }
         if exited.wait(timeout: .now() + cliTimeout) == .timedOut {
             p.terminate(); kill(p.processIdentifier, SIGKILL)
             outPipe.fileHandleForReading.readabilityHandler = nil
-            return ("시간 초과(\(Int(Date().timeIntervalSince(started)))초)", nil)
+            let s = Int(Date().timeIntervalSince(started))
+            return (CliFailure(text: L.t("시간 초과(\(s)초)", "Timed out (\(s)s)"), transient: true), nil)
         }
         // a leftover child can keep the pipe open; don't wait for it long
         _ = outDone.wait(timeout: .now() + 1.5)
         outPipe.fileHandleForReading.readabilityHandler = nil
         errPipe.fileHandleForReading.readabilityHandler = nil
         lock.lock(); let text = String(decoding: out, as: UTF8.self); let over = overflow; lock.unlock()
-        if over { return ("응답이 너무 커요", nil) }
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return ("빈 응답(\(Int(Date().timeIntervalSince(started)))초)", nil) }
+        if over { return (CliFailure(text: L.t("응답이 너무 커요", "The response is too large")), nil) }
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let s = Int(Date().timeIntervalSince(started))
+            return (CliFailure(text: L.t("빈 응답(\(s)초)", "Empty response (\(s)s)"), transient: true), nil)
+        }
         // agy prints one JSON object (sometimes followed by extra lines): parse the first line that is JSON
         var parsed: [String: Any]?
         for line in text.split(separator: "\n") {
@@ -137,8 +146,8 @@ enum Antigravity {
             guard t.hasPrefix("{") else { continue }
             if let j = (try? JSONSerialization.jsonObject(with: Data(t.utf8))) as? [String: Any] { parsed = j; break }
         }
-        guard let dict = parsed else { return ("빈 응답(종료 코드 \(p.terminationStatus))", nil) }
-        if let st = Usage.str(dict, "status"), st != "SUCCESS" { return (sanitize(Usage.str(dict, "error") ?? st), nil) }
+        guard let dict = parsed else { return (CliFailure(text: L.t("빈 응답(종료 코드 \(p.terminationStatus))", "Empty response (exit code \(p.terminationStatus))"), transient: true), nil) }
+        if let st = Usage.str(dict, "status"), st != "SUCCESS" { return (CliFailure(text: sanitize(Usage.str(dict, "error") ?? st)), nil) }
         return (nil, dict)
     }
 

@@ -74,7 +74,7 @@ enum Fetch {
         lock.lock(); defer { lock.unlock() }
         return (0..<3).map { i in
             if let q = out[i] { return q }
-            let q = Quota.fail("시간 초과", transient: true); q.name = serviceNames[i]; return q
+            let q = Quota.fail(L.t("시간 초과", "Timed out"), transient: true); q.name = serviceNames[i]; return q
         }
     }
 }
@@ -106,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        Log.write("UsageGauge \(AppVersion.string) started")
+        Log.write("UsageGauge \(AppVersion.string) started (language \(L.mode), \(L.ko ? "ko" : "en"))")
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let b = item.button {
             b.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold)
@@ -115,10 +115,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             b.target = self; b.action = #selector(statusClicked(_:))
             b.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
-        // right click: a quiet menu with "종료" only
-        quitMenu = NSMenu()
-        let quit = NSMenuItem(title: "종료", action: #selector(quit), keyEquivalent: "q"); quit.target = self
-        quitMenu.addItem(quit)
+        // right click: a quiet menu with the language and "종료" (rebuilt each time, so it follows the language)
+        quitMenu = buildMenu()
 
         model.onDetails = { [weak self] in self?.popover.performClose(nil); self?.openDashboard() }
         model.onHabit = { [weak self] in self?.runHabit(openWhenDone: true) }
@@ -159,6 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func statusClicked(_ sender: NSStatusBarButton) {
         if NSApp.currentEvent?.type == .rightMouseUp || NSApp.currentEvent?.modifierFlags.contains(.control) == true {
             popover.performClose(nil)
+            quitMenu = buildMenu()
             item.menu = quitMenu; item.button?.performClick(nil); item.menu = nil   // shows the menu at the item
             return
         }
@@ -296,8 +295,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         b.image = img
         b.title = rem.map { Usage.remainingNumber($0) + "%" } ?? ""
-        b.toolTip = i.map { "가장 급한 한도: \(r[$0].name) \(Usage.remainingNumber(r[$0].remaining))% 남음" }
-            ?? (loaded ? "UsageGauge: 읽은 한도가 없어요" : "UsageGauge: 불러오는 중")
+        b.toolTip = i.map { L.t("가장 급한 한도: ", "Most urgent: ") + r[$0].name + " " + Design.left(Usage.remainingNumber(r[$0].remaining)) }
+            ?? (loaded ? L.t("UsageGauge: 읽은 한도가 없어요", "UsageGauge: no limits read") : L.t("UsageGauge: 불러오는 중", "UsageGauge: loading"))
     }
 
     func updateRefreshFeedback(now: Date) {
@@ -310,7 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func updateModel() {
         let r = rings
         model.gauges = loaded ? zip(r, Design.logoKeys).map { Design.gauge($0, logo: $1) }
-            : Design.logoKeys.map { k in let q = Quota(); q.error = "확인 전"; return Design.gauge(q, logo: k) }
+            : Design.logoKeys.map { k in let q = Quota(); q.error = Design.notChecked; return Design.gauge(q, logo: k) }
         model.rows = Design.rows(main: qs, ag: ag, loaded: loaded)
         model.header = Design.header(lastCheck: lastConfirmed, main: qs)
         model.todo = Design.loadTodo()
@@ -323,19 +322,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func quit() { NSApp.terminate(nil) }
 
+    // "언어 / Language" as on Windows: auto (macOS language), 한국어, English; the current one is checked
+    func buildMenu() -> NSMenu {
+        let m = NSMenu()
+        let lang = NSMenuItem(title: L.t("언어 / Language", "Language / 언어"), action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for (mode, title) in [("auto", L.t("자동 (macOS 언어)", "Auto (macOS language)")), ("ko", "한국어"), ("en", "English")] {
+            let it = NSMenuItem(title: title, action: #selector(chooseLanguage(_:)), keyEquivalent: "")
+            it.target = self; it.representedObject = mode; it.state = L.mode == mode ? .on : .off
+            sub.addItem(it)
+        }
+        lang.submenu = sub
+        m.addItem(lang)
+        m.addItem(.separator())
+        let quit = NSMenuItem(title: L.t("종료", "Quit"), action: #selector(quit), keyEquivalent: "q"); quit.target = self
+        m.addItem(quit)
+        return m
+    }
+    @objc func chooseLanguage(_ sender: NSMenuItem) {
+        guard let mode = sender.representedObject as? String else { return }
+        L.set(mode)
+        Log.write("language: \(L.mode) (\(L.ko ? "ko" : "en"))")
+        shownFreshness = freshness()
+        updateStatusItem(); updateModel()
+    }
+
     @objc func openDashboard() {
         if FileManager.default.fileExists(atPath: Paths.page) {
             NSWorkspace.shared.open(URL(fileURLWithPath: Paths.page)); return
         }
-        alert("사용량 상세 화면이 아직 없어요.",
-              "저장소의 mac/install-dashboard.sh 를 한 번 실행하면 화면이 만들어지고, 자동 갱신을 켜면 30분마다 새로 만들어져요.")
+        alert(L.t("사용량 상세 화면이 아직 없어요.", "The usage details page is not set up yet."),
+              L.t("저장소의 mac/install-dashboard.sh 를 한 번 실행하면 화면이 만들어지고, 자동 갱신을 켜면 30분마다 새로 만들어져요.",
+                  "Run mac/install-dashboard.sh from the repository once to build it. With auto refresh on, it is rebuilt every 30 minutes."))
     }
 
     func alert(_ title: String, _ text: String) {
         popover.performClose(nil)
         NSApp.activate(ignoringOtherApps: true)
         let a = NSAlert(); a.messageText = title; a.informativeText = text; a.alertStyle = .informational
-        a.addButton(withTitle: "확인"); a.runModal()
+        a.addButton(withTitle: L.t("확인", "OK")); a.runModal()
     }
 
     // ---- usagegauge://habit-check (the dashboard's "AI로 진단하기" link; that page reloads itself) ----
@@ -354,19 +379,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .busy: return
         case .wait(let m):
             Log.write("habit check: asked again within 10 min (\(fromURL ? "link" : "button")), not run")
-            alert("AI 진단은 방금 돌렸어요.", HabitGate.waitText(m) + ".")
+            alert(L.t("AI 진단은 방금 돌렸어요.", "The AI check just ran."), HabitGate.waitText(m) + ".")
             return
         case .confirm:
             popover.performClose(nil)
             NSApp.activate(ignoringOtherApps: true)
             let a = NSAlert(); a.messageText = HabitGate.confirmTitle; a.informativeText = HabitGate.confirmText
-            a.addButton(withTitle: "진단하기"); a.addButton(withTitle: "취소")
+            a.addButton(withTitle: L.t("진단하기", "Run check")); a.addButton(withTitle: L.t("취소", "Cancel"))
             if a.runModal() != .alertFirstButtonReturn { Log.write("habit check: link request cancelled"); return }
             if habitRunning { return }
         case .run: break
         }
         guard FileManager.default.fileExists(atPath: Paths.refreshScript), let node = nodePath() else {
-            alert("AI 진단을 실행할 수 없어요.", "mac/install-dashboard.sh 로 사용량 상세 화면을 먼저 준비해 주세요. (Node.js 22.13 이상 필요)")
+            alert(L.t("AI 진단을 실행할 수 없어요.", "The AI check cannot run."),
+                  L.t("mac/install-dashboard.sh 로 사용량 상세 화면을 먼저 준비해 주세요. (Node.js 22.13 이상 필요)",
+                      "Set up the usage details page with mac/install-dashboard.sh first (needs Node.js 22.13 or later)."))
             return
         }
         habitRunning = true; model.habitRunning = true
@@ -436,14 +463,15 @@ func renderPreview(_ dir: String) {
 enum HabitGate {
     static let minGap: TimeInterval = 10 * 60
     static let defaultsKey = "habitCheckLastRun"
-    static let confirmTitle = "AI 진단을 돌릴까요?", confirmText = "한도를 조금 써요."
+    static var confirmTitle: String { L.t("AI 진단을 돌릴까요?", "Run the AI check?") }
+    static var confirmText: String { L.t("한도를 조금 써요.", "It uses a little of your limit.") }
     enum Step: Equatable { case run, confirm, wait(Int), busy }
     static func waitMinutes(lastRun: Date?, now: Date) -> Int? {
         guard let l = lastRun else { return nil }
         let left = l.addingTimeInterval(minGap).timeIntervalSince(now)
         return left > 0 ? max(1, Int(ceil(left / 60))) : nil
     }
-    static func waitText(_ minutes: Int) -> String { "\(minutes)분 뒤에 다시 돌릴 수 있어요" }
+    static func waitText(_ minutes: Int) -> String { L.t("\(minutes)분 뒤에 다시 돌릴 수 있어요", "You can run it again in \(minutes) min") }
     static func decide(fromURL: Bool, running: Bool, lastRun: Date?, now: Date) -> Step {
         if running { return .busy }
         if let m = waitMinutes(lastRun: lastRun, now: now) { return .wait(m) }
@@ -452,11 +480,15 @@ enum HabitGate {
 }
 
 // shown in the log at launch, so a rebuilt and reinstalled app can be told apart from the previous one
-enum AppVersion { static let string = "1.0.6" }
+enum AppVersion { static let string = "1.0.7" }
 
 @main
 struct UsageGaugeMain {
     static func main() {
+        L.load()
+        // previews and probes: --lang ko|en for this run only (lang.txt is not written)
+        if let i = CommandLine.arguments.firstIndex(of: "--lang"), i + 1 < CommandLine.arguments.count,
+           ["ko", "en"].contains(CommandLine.arguments[i + 1]) { L.mode = CommandLine.arguments[i + 1]; L.apply() }
         if let i = CommandLine.arguments.firstIndex(of: "--render-refresh-preview"), i + 1 < CommandLine.arguments.count {
             _ = NSApplication.shared
             Preview.renderRefresh(to: CommandLine.arguments[i + 1]); return
