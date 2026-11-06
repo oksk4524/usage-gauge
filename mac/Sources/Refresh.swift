@@ -182,6 +182,47 @@ struct Debouncer: Equatable {
     }
 }
 
+// Tracks only the user's current refresh, not unrelated automatic polling.
+// A second click joins pending work and rechecks services already done; it never stacks pending work.
+struct ManualRefresh {
+    var pending: Set<Provider> = []
+    var failed: Set<Provider> = []
+    var finishedAt: Date?
+    var active: Bool { !pending.isEmpty }
+
+    mutating func begin() -> Set<Provider> {
+        let requested = Set(Provider.allCases).subtracting(pending)
+        pending.formUnion(requested); failed.subtract(requested); finishedAt = nil
+        return requested
+    }
+    mutating func finish(_ p: Provider, success: Bool, now: Date) {
+        guard pending.remove(p) != nil else { return }
+        if !success { failed.insert(p) }
+        if pending.isEmpty { finishedAt = now }
+    }
+    func text(states: [Provider: ProviderState], now: Date) -> String? {
+        if active {
+            let waiting = Provider.allCases.filter { pending.contains($0) }.map { p in
+                let s = states[p] ?? ProviderState()
+                switch Sched.decide(s, now: now, idle: RefreshPolicy.idle(p)) {
+                case .busy: return "\(p.name) 조회 중…"
+                case .start: return "\(p.name) 조회 준비 중…"
+                case .wait(let at):
+                    let seconds = max(1, Int(ceil(at.timeIntervalSince(now))))
+                    let wait = seconds < 60 ? "\(seconds)초" : "\(seconds / 60)분 \(seconds % 60)초"
+                    return "\(p.name) \(wait) 뒤 조회" + (s.rateLimited ? " (요청 제한)" : "")
+                }
+            }.joined(separator: "\n")
+            let errors = Provider.allCases.filter { failed.contains($0) }.map { "\($0.name) 조회 실패" }
+            return ([waiting] + errors).joined(separator: "\n")
+        }
+        guard let end = finishedAt, now.timeIntervalSince(end) < 15 else { return nil }
+        if failed.isEmpty { return "새로고침 완료" }
+        let names = Provider.allCases.filter { failed.contains($0) }.map { $0.name }.joined(separator: ", ")
+        return "\(names) 조회 실패" + (failed.count < Provider.allCases.count ? ", 나머지 완료" : "")
+    }
+}
+
 struct FetchResult {
     var quotas: [Quota]
     var retryAfter: TimeInterval?
