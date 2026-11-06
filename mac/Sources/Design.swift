@@ -31,10 +31,21 @@ enum Design {
     // the four rings: Codex, Claude, Grok, Gemini (Antigravity). Antigravity's other pool is not a ring.
     static func ringQuotas(main: [Quota], ag: [Quota]) -> [Quota] {
         var four = Array(main.prefix(3))
-        if let g = ag.first { four.append(g) } else { let q = Quota(); q.name = Antigravity.geminiName; q.error = "확인 전"; four.append(q) }
+        if let g = ag.first { four.append(g) } else { let q = Quota(); q.name = Antigravity.geminiName; q.error = notChecked; four.append(q) }
         return four
     }
     static let logoKeys = ["codex", "claude", "grok", "gemini"]
+
+    // shared words (both languages); "확인 전" is the placeholder error of a service not read yet
+    static var notChecked: String { L.t("확인 전", "Not read yet") }
+    static func isNotChecked(_ e: String) -> Bool { e == "확인 전" || e == "Not read yet" }
+    static var usedUp: String { L.t("다 씀", "Used up") }
+    static var soon: String { L.t("곧", "soon") }
+    static func left(_ pct: String) -> String { L.t(pct + "% 남음", pct + "% left") }
+    static func refillsAt(_ t: String) -> String { L.t(t + "에 다시 차요", "refills " + t) }
+    static var refillsSoon: String { L.t("곧 다시 차요", "refills soon") }
+    // an error made in either language starts with this
+    static func errorIs(_ e: String, _ ko: String, _ en: String) -> Bool { e.hasPrefix(ko) || e.hasPrefix(en) }
 
     // most urgent = lowest remaining among services that actually returned a value (no login / failures excluded).
     // A used-up service (0%) is skipped while another one still has room, as in the approved mock
@@ -69,14 +80,14 @@ enum Design {
     static func secondLines(_ q: Quota, now: Date = Date(), tz: TimeZone = .current) -> (text: String, reset: String?, usedUp: Bool, detail: String)? {
         let ws = MenuBarStrip.others(q)
         guard !ws.isEmpty else { return nil }
-        let text = ws.map { $0.label + " " + (MenuBarStrip.isUsedUp($0) ? "다 씀" : Usage.remainingNumber($0.remaining) + "%") }.joined(separator: ", ")
+        let text = ws.map { $0.label + " " + (MenuBarStrip.isUsedUp($0) ? usedUp : Usage.remainingNumber($0.remaining) + "%") }.joined(separator: ", ")
         // the reset of the lowest window, when it is low
         let low = ws.filter { $0.remaining < secondLowBelow }.min { $0.remaining < $1.remaining }
         var reset: String?
-        if let l = low, let r = l.reset { reset = r > now ? MenuBarStrip.clock(r, tz: tz) + "에 다시 차요" : "곧 다시 차요" }
+        if let l = low, let r = l.reset { reset = r > now ? refillsAt(MenuBarStrip.clock(r, tz: tz)) : refillsSoon }
         let detail = ws.map { w -> String in
-            var d = w.label + " " + (MenuBarStrip.isUsedUp(w) ? "다 씀" : Usage.remainingNumber(w.remaining) + "% 남음")
-            if w.remaining < secondLowBelow, let r = w.reset { d += r > now ? ", " + MenuBarStrip.clock(r, tz: tz) + "에 다시 차요" : ", 곧 다시 차요" }
+            var d = w.label + " " + (MenuBarStrip.isUsedUp(w) ? usedUp : left(Usage.remainingNumber(w.remaining)))
+            if w.remaining < secondLowBelow, let r = w.reset { d += ", " + (r > now ? refillsAt(MenuBarStrip.clock(r, tz: tz)) : refillsSoon) }
             return d
         }.joined(separator: "\n")
         return (text, reset, ws.contains(where: MenuBarStrip.isUsedUp), detail)
@@ -88,7 +99,7 @@ enum Design {
         }
         let reset = q.resetsAt.map { when($0, now: now, tz: tz) } ?? ""
         if q.remaining <= 0 {
-            return Gauge(logo: logo, state: .usedUp, percentText: "—", caption: reset.isEmpty ? "다 씀" : reset + "까지",
+            return Gauge(logo: logo, state: .usedUp, percentText: "—", caption: reset.isEmpty ? usedUp : L.t(reset + "까지", "until " + reset),
                          detail: q.failing ? q.error : nil, tone: .red, fraction: 0)
         }
         // the ring is the weekly limit; the 5-hour window goes on a small line under it
@@ -96,7 +107,7 @@ enum Design {
                       detail: q.failing ? q.error : nil, tone: tone(q.remaining), fraction: min(1, q.remaining / 100))
         if let s = secondLines(q, now: now, tz: tz) {
             g.second = s.text; g.secondReset = s.reset; g.secondUsedUp = s.usedUp
-            let weekLine = "주간 " + Usage.remainingNumber(q.remaining) + "% 남음"
+            let weekLine = MenuBarStrip.weekLabel + " " + left(Usage.remainingNumber(q.remaining))
             g.detail = [weekLine, s.detail, g.detail].compactMap { $0 }.joined(separator: "\n")
         }
         return g
@@ -128,16 +139,16 @@ enum Design {
     static func ageText(_ t: Date?, now: Date = Date()) -> String? {
         guard let t = t else { return nil }
         let m = Int(max(0, now.timeIntervalSince(t)) / 60)
-        if m < 1 { return "방금 읽은 값" }
-        if m < 60 { return "\(m)분 전 값" }
-        if m < 48 * 60 { return "\(m / 60)시간 전 값" }
-        return "\(m / 1440)일 전 값"
+        if m < 1 { return L.t("방금 읽은 값", "Just read") }
+        if m < 60 { return L.t("\(m)분 전 값", "\(m)m old") }
+        if m < 48 * 60 { return L.t("\(m / 60)시간 전 값", "\(m / 60)h old") }
+        return L.t("\(m / 1440)일 전 값", "\(m / 1440)d old")
     }
 
     static func row(_ q: Quota, logo: String, name: String, ag: Bool, now: Date = Date(), tz: TimeZone = .current) -> Row {
         if !q.ok {
             let st = shortStatus(q)
-            let w = Line(label: "주간", fraction: 0, value: "—", reset: st, tone: .off, emphasis: false, muted: true)
+            let w = Line(label: MenuBarStrip.weekLabel, fraction: 0, value: "—", reset: st, tone: .off, emphasis: false, muted: true)
             return Row(logo: logo, name: name, weekly: w, five: nil, staleText: nil, detail: name + ": " + (q.error ?? st))
         }
         let stale = Merge.showStale(q, ag: ag)
@@ -146,38 +157,38 @@ enum Design {
         let wReset = q.resetsAt.map { when($0, now: now, tz: tz) } ?? ""
         var weekly: Line
         if q.remaining <= 0 {
-            weekly = Line(label: "주간", fraction: 0, value: "다 씀", reset: wReset, tone: .off, emphasis: !stale, muted: false)
-            tips.append("주간 다 씀" + (wReset.isEmpty ? "" : ", " + wReset + "에 다시 차요"))
+            weekly = Line(label: MenuBarStrip.weekLabel, fraction: 0, value: usedUp, reset: wReset, tone: .off, emphasis: !stale, muted: false)
+            tips.append(MenuBarStrip.weekLabel + " " + usedUp + (wReset.isEmpty ? "" : ", " + refillsAt(wReset)))
         } else {
-            weekly = Line(label: "주간", fraction: min(1, q.remaining / 100), value: Usage.remainingNumber(q.remaining) + "%",
+            weekly = Line(label: MenuBarStrip.weekLabel, fraction: min(1, q.remaining / 100), value: Usage.remainingNumber(q.remaining) + "%",
                           reset: wReset, tone: tone(q.remaining), emphasis: false, muted: false)
-            tips.append("주간 " + Usage.remainingNumber(q.remaining) + "% 남음" + (wReset.isEmpty ? "" : ", 초기화 " + wReset))
+            tips.append(MenuBarStrip.weekLabel + " " + left(Usage.remainingNumber(q.remaining)) + (wReset.isEmpty ? "" : L.t(", 초기화 ", ", resets ") + wReset))
         }
         // the 5-hour window (or the service's other short window); "없음" when the service sends none
         let ws = MenuBarStrip.others(q)
         var five: Line
-        if let w = ws.first(where: { $0.label == "5시간" }) ?? ws.first {
-            var reset = ""
-            if w.remaining < 100, let r = w.reset { reset = r > now ? MenuBarStrip.clock(r, tz: tz) : "곧" }
+        if let w = ws.first(where: { $0.label == MenuBarStrip.fiveHourLabel }) ?? ws.first {
+            var reset = "", refillSoon = false
+            if w.remaining < 100, let r = w.reset { if r > now { reset = MenuBarStrip.clock(r, tz: tz) } else { reset = soon; refillSoon = true } }
             if MenuBarStrip.isUsedUp(w) {
-                five = Line(label: w.label, fraction: 0, value: "다 씀", reset: reset, tone: .off, emphasis: !stale, muted: false)
-                tips.append(w.label + " 다 씀" + (reset.isEmpty ? "" : reset == "곧" ? ", 곧 다시 차요" : ", " + reset + "에 다시 차요"))
+                five = Line(label: w.label, fraction: 0, value: usedUp, reset: reset, tone: .off, emphasis: !stale, muted: false)
+                tips.append(w.label + " " + usedUp + (reset.isEmpty ? "" : refillSoon ? ", " + refillsSoon : ", " + refillsAt(reset)))
             } else {
                 five = Line(label: w.label, fraction: min(1, w.remaining / 100), value: Usage.remainingNumber(w.remaining) + "%",
                             reset: reset, tone: tone(w.remaining), emphasis: false, muted: false)
-                tips.append(w.label + " " + Usage.remainingNumber(w.remaining) + "% 남음" + (reset.isEmpty || reset == "곧" ? "" : ", " + reset + "에 다시 차요"))
+                tips.append(w.label + " " + left(Usage.remainingNumber(w.remaining)) + (reset.isEmpty || refillSoon ? "" : ", " + refillsAt(reset)))
             }
         } else {
-            five = Line(label: "5시간", fraction: 0, value: "없음", reset: "", tone: .off, emphasis: false, muted: true)
-            tips.append("5시간 한도는 이 서비스가 지금 알려 주지 않아요")
+            five = Line(label: MenuBarStrip.fiveHourLabel, fraction: 0, value: L.t("없음", "None"), reset: "", tone: .off, emphasis: false, muted: true)
+            tips.append(L.t("5시간 한도는 이 서비스가 지금 알려 주지 않아요", "This service does not report a 5h limit right now"))
         }
         var staleText: String?
         if stale {
-            staleText = ageText(q.lastOk, now: now) ?? "오래된 값"
+            staleText = ageText(q.lastOk, now: now) ?? L.t("오래된 값", "Old value")
             weekly.tone = weekly.tone == .off ? .off : .stale; five.tone = five.tone == .off ? .off : .stale
-            tips.append("값이 오래됐어요" + (q.failing ? ": " + (q.error ?? "") : ""))
+            tips.append(L.t("값이 오래됐어요", "This value is old") + (q.failing ? ": " + (q.error ?? "") : ""))
         }
-        if let a = q.account { tips.append("계정 " + (DashboardFeed.mask(a) ?? a)) }
+        if let a = q.account { tips.append(L.t("계정 ", "Account ") + (DashboardFeed.mask(a) ?? a)) }
         return Row(logo: logo, name: name, weekly: weekly, five: five, staleText: staleText, detail: tips.joined(separator: "\n"))
     }
 
@@ -186,7 +197,7 @@ enum Design {
     static let rowLogos = ["codex", "claude", "grok", "gemini", "antigravity"]
     static func rows(main: [Quota], ag: [Quota], loaded: Bool, now: Date = Date(), tz: TimeZone = .current) -> [Row] {
         func waiting(_ i: Int) -> Row {
-            let q = Quota(); q.error = "확인 전"
+            let q = Quota(); q.error = notChecked
             return row(q, logo: rowLogos[i], name: rowNames[i], ag: i >= 3, now: now, tz: tz)
         }
         guard loaded else { return (0..<4).map(waiting) }
@@ -198,16 +209,17 @@ enum Design {
 
     // a column is ~70pt wide: the full message goes to the tooltip
     static func shortStatus(_ q: Quota) -> String {
-        if q.noLogin { return "로그인 필요" }
-        if q.notInstalled { return "설치 안 됨" }
-        guard let e = q.error else { return "확인 전" }
-        if e == "확인 전" { return e }
-        if e.hasPrefix("로그인 만료") { return "다시 로그인" }
-        if e.hasPrefix("토큰 갱신 대기") { return "갱신 대기" }
-        if e.hasPrefix("접근 거부") { return "접근 거부" }
-        if e.hasPrefix("키체인") { return "키체인 허용 필요" }
-        if q.transient { return "연결 실패" }
-        return "읽기 실패"
+        // q.error may have been made in the other language before a switch: every check accepts both
+        if q.noLogin { return L.t("로그인 필요", "Sign in needed") }
+        if q.notInstalled { return L.t("설치 안 됨", "Not installed") }
+        guard let e = q.error else { return notChecked }
+        if isNotChecked(e) { return notChecked }
+        if errorIs(e, "로그인 만료", "Login expired") { return L.t("다시 로그인", "Sign in again") }
+        if errorIs(e, "토큰 갱신 대기", "Token expired") { return L.t("갱신 대기", "Token expired") }
+        if errorIs(e, "접근 거부", "Access denied") { return L.t("접근 거부", "Access denied") }
+        if errorIs(e, "키체인", "Keychain") { return L.t("키체인 허용 필요", "Allow keychain") }
+        if q.transient { return L.t("연결 실패", "No connection") }
+        return L.t("읽기 실패", "Read failed")
     }
 
     // "오늘 밤 12시", "오늘 15:35", "내일 15:35", "월 14:58" (within 3 days), "11/4 15:35", "11/6" (midnight)
@@ -216,10 +228,10 @@ enum Design {
         let diff = cal.dateComponents([.day], from: cal.startOfDay(for: now), to: cal.startOfDay(for: d)).day ?? 0
         let c = cal.dateComponents([.month, .day, .hour, .minute, .weekday], from: d)
         let hm = String(format: "%02d:%02d", c.hour!, c.minute!)
-        if diff == 1 && hm == "00:00" { return "오늘 밤 12시" }
-        if diff == 0 { return "오늘 " + hm }
-        if diff == 1 { return "내일 " + hm }
-        if diff >= 2 && diff <= 3 { return ["일", "월", "화", "수", "목", "금", "토"][c.weekday! - 1] + " " + hm }
+        if diff == 1 && hm == "00:00" { return L.t("오늘 밤 12시", "Midnight") }
+        if diff == 0 { return L.t("오늘 ", "Today ") + hm }
+        if diff == 1 { return L.t("내일 ", "Tmrw ") + hm }
+        if diff >= 2 && diff <= 3 { return MenuBarStrip.weekdayName(c.weekday!) + " " + hm }
         return "\(c.month!)/\(c.day!)" + (hm == "00:00" ? "" : " " + hm)
     }
 
@@ -228,11 +240,12 @@ enum Design {
         var parts: [String] = []
         if let t = lastCheck {
             let m = Int(now.timeIntervalSince(t) / 60)
-            parts.append(m < 1 ? "방금 확인" : m < 60 ? "\(m)분 전 확인" : "\(m / 60)시간 전 확인")
+            parts.append(L.ko ? (m < 1 ? "방금 확인" : m < 60 ? "\(m)분 전 확인" : "\(m / 60)시간 전 확인")
+                                : (m < 1 ? "Checked just now" : m < 60 ? "Checked \(m)m ago" : "Checked \(m / 60)h ago"))
         }
         var ids = Set<String>()
         for q in main.prefix(3) where !q.noLogin { if let k = q.accountKey ?? q.credKey { ids.insert(k) } }
-        if !ids.isEmpty { parts.append("계정 \(ids.count)개") }
+        if !ids.isEmpty { parts.append(L.t("계정 \(ids.count)개", ids.count == 1 ? "1 account" : "\(ids.count) accounts")) }
         return parts.joined(separator: ", ")
     }
 
@@ -257,21 +270,30 @@ enum Design {
         guard let b = best else { return nil }
         let name: String
         if let n = names[b.session] { name = "\"" + n + "\"" }
-        else if let p = b.project, p != "unknown" { name = (names[p] ?? "이름 없는 폴더") + " 대화" }
-        else { name = "이름 없는 대화" }
-        return Todo(name: name, tokens: compact(b.ctx) + " 토큰")
+        else if let p = b.project, p != "unknown" {
+            name = L.ko ? (names[p] ?? "이름 없는 폴더") + " 대화" : "Chat in " + (names[p] ?? "an unnamed folder")
+        }
+        else { name = L.t("이름 없는 대화", "Unnamed chat") }
+        return Todo(name: name, tokens: compact(b.ctx) + L.t(" 토큰", " tokens"))
     }
 
     // dashboard compact(): 1억 and 1만 units, one decimal below 100 of the unit
+    // English: K, M and B, one decimal below 100 of the unit
     static func compact(_ n: Double) -> String {
         func f(_ x: Double) -> String {
-            let nf = NumberFormatter(); nf.locale = Locale(identifier: "ko_KR"); nf.numberStyle = .decimal
+            let nf = NumberFormatter(); nf.locale = Locale(identifier: L.ko ? "ko_KR" : "en_US"); nf.numberStyle = .decimal
             nf.maximumFractionDigits = x >= 100 ? 0 : 1; nf.roundingMode = .halfUp
             return nf.string(from: NSNumber(value: x)) ?? String(x)
         }
-        if n >= 1e8 { return f(n / 1e8) + "억" }
-        if n >= 1e4 { return f(n / 1e4) + "만" }
-        let nf = NumberFormatter(); nf.locale = Locale(identifier: "ko_KR"); nf.numberStyle = .decimal
+        if !L.ko {
+            if n >= 1e9 { return f(n / 1e9) + "B" }
+            if n >= 1e6 { return f(n / 1e6) + "M" }
+            if n >= 1e3 { return f(n / 1e3) + "K" }
+        } else {
+            if n >= 1e8 { return f(n / 1e8) + "억" }
+            if n >= 1e4 { return f(n / 1e4) + "만" }
+        }
+        let nf = NumberFormatter(); nf.locale = Locale(identifier: L.ko ? "ko_KR" : "en_US"); nf.numberStyle = .decimal
         return nf.string(from: NSNumber(value: n)) ?? String(Int(n))
     }
 

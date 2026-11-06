@@ -116,7 +116,7 @@ struct LineView: View {
                 .font(.system(size: main ? 12.5 : 11.5, weight: main ? .bold : .semibold)).monospacedDigit()
                 .foregroundColor(Color(l.emphasis ? Palette.red : l.muted || l.tone == .stale ? scheme.sub : scheme.fg))
                 .lineLimit(1).minimumScaleFactor(0.8)
-                .frame(width: 40, alignment: .trailing)
+                .frame(width: L.ko ? 40 : 52, alignment: .trailing)   // "Used up" needs more room than "다 씀"
             Text(l.reset).font(.system(size: 10.5)).foregroundColor(Color(scheme.sub))
                 .lineLimit(1).minimumScaleFactor(0.75)
                 .frame(width: 66, alignment: .leading)
@@ -264,7 +264,7 @@ struct RefreshButton: View {
             .frame(width: 24, height: 24)
             .contentShape(Circle())
         }
-        .buttonStyle(.plain).help("새로고침")
+        .buttonStyle(.plain).help(L.t("새로고침", "Refresh"))
         .hoverArea { h in withAnimation(RefreshButton.lean) { ui.hover = h } }
     }
 }
@@ -282,7 +282,7 @@ struct PopoverView: View {
         let s = dark ? Palette.dark : Palette.light
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                Text("남은 한도").font(.system(size: 13, weight: .bold)).foregroundColor(Color(s.fg))
+                Text(L.t("남은 한도", "Limits left")).font(.system(size: 13, weight: .bold)).foregroundColor(Color(s.fg))
                 Spacer()
                 if !model.header.isEmpty {
                     Text(model.header).font(.system(size: 11)).foregroundColor(Color(s.sub))
@@ -301,10 +301,10 @@ struct PopoverView: View {
             if let t = model.todo {
                 Rectangle().fill(Color(s.line)).frame(height: 1).padding(.top, 14)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("지금 할 일").font(.system(size: 11)).foregroundColor(Color(s.sub)).padding(.bottom, 4)
+                    Text(L.t("지금 할 일", "To do now")).font(.system(size: 11)).foregroundColor(Color(s.sub)).padding(.bottom, 4)
                     Text("\(Text(t.name).font(.system(size: 12.5, weight: .bold))) \(Text(t.tokens).font(.system(size: 12.5)))")
                         .foregroundColor(Color(s.fg)).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
-                    Text("다음 작업은 새 대화에서").font(.system(size: 12, weight: .semibold)).foregroundColor(Color(s.accent)).padding(.top, 2)
+                    Text(L.t("다음 작업은 새 대화에서", "Start the next task in a new chat")).font(.system(size: 12, weight: .semibold)).foregroundColor(Color(s.accent)).padding(.top, 2)
                 }
                 .padding(.horizontal, 2).padding(.top, 10)
             }
@@ -313,9 +313,9 @@ struct PopoverView: View {
             HStack(spacing: 4) {
                 let fill = Color(s.track)
                 let habitOff = model.habitRunning || model.habitWait != nil
-                FooterButton(title: "사용량 상세 보기", color: Color(s.accent), bold: true, fill: fill,
+                FooterButton(title: L.t("사용량 상세 보기", "Usage details"), color: Color(s.accent), bold: true, fill: fill,
                              forcedHover: forcedHover == 1 ? true : nil, ui: model.detailsUI, action: model.onDetails)
-                FooterButton(title: model.habitRunning ? "진단 중…" : "AI 진단", color: Color(s.sub), bold: false,
+                FooterButton(title: model.habitRunning ? L.t("진단 중…", "Checking…") : L.t("AI 진단", "AI check"), color: Color(s.sub), bold: false,
                              hoverColor: habitOff ? nil : Color(s.fg), fill: habitOff ? .clear : fill,
                              forcedHover: forcedHover == 2 ? true : nil, ui: model.habitUI, action: model.onHabit)
                     .opacity(model.habitWait != nil && !model.habitRunning ? 0.5 : 1)
@@ -357,12 +357,12 @@ enum Preview {
         m.gauges = zip([codex, claude, grok, gem], Design.logoKeys).map { Design.gauge($0, logo: $1, now: now, tz: tz) }
         claude.windows = [UsageWindow(key: "five_hour", used: 65, reset: at(10, 30, 20, 20))]
         let old = q(81, at(11, 9, 12, 0), "claude:c"); old.lastOk = now.addingTimeInterval(-6 * 3600); old.failing = true; old.stale = true
-        old.error = "토큰 갱신 대기: Claude Code를 한 번 열어 주세요"
+        old.error = L.t("토큰 갱신 대기: Claude Code를 한 번 열어 주세요", "Token expired: open Claude Code once")
         let agy = q(100, at(11, 6, 0, 0), "ag"); agy.windows = [UsageWindow(key: "five_hour", used: 0, reset: at(10, 30, 22, 15))]
         for x in [codex, claude, grok, gem, agy] { x.lastOk = now }
         m.rows = Design.rows(main: [codex, claude, grok], ag: [gem, agy], loaded: true, now: now, tz: tz)
-            + [Design.row(old, logo: "claude", name: "Claude (오래된 값 예시)", ag: false, now: now, tz: tz)]
-        m.todo = Design.Todo(name: "\"[유령마작] 점검, 스토리, 최적화\"", tokens: Design.compact(852373) + " 토큰")
+            + [Design.row(old, logo: "claude", name: L.t("Claude (오래된 값 예시)", "Claude (old value example)"), ag: false, now: now, tz: tz)]
+        m.todo = Design.Todo(name: L.t("\"[유령마작] 점검, 스토리, 최적화\"", "\"[Ghost Mahjong] review, story, tuning\""), tokens: Design.compact(852373) + L.t(" 토큰", " tokens"))
         return m
     }
 
@@ -410,9 +410,10 @@ enum Preview {
         for p in Provider.allCases { batch.finish(p, success: p != .claude, now: now) }
         let failed = batch.text(states: states, now: now)!
         for dark in [false, true] {
-            for (name, text, error) in [("before", nil as String?, false), ("waiting", waiting, false), ("done", done, false), ("failed", failed, true)] {
+            for (name, text, error) in [("before", nil as String?, false), ("waiting", waiting, false), ("done", done, false), ("failed", failed, true), ("full", nil, false)] {
                 let m = mockModel(now: now, tz: TimeZone(identifier: "Asia/Seoul")!)
-                m.todo = nil; m.rows = Array(m.rows.prefix(5))
+                // "full": the mock's to-do item and old-value example row as well
+                if name != "full" { m.todo = nil; m.rows = Array(m.rows.prefix(5)) }
                 m.refreshStatus = text; m.refreshFailed = error
                 let v = PopoverView(model: m, forcedDark: dark, rounded: true)
                     .padding(12).background(Color(nsColor: Palette.hex(0x171717)))
