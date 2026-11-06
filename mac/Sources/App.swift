@@ -92,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let network = NetworkWatch()
     var lastRootsCheck = Date()
     var shownFreshness: String?
+    var manualRefresh = ManualRefresh()
     var busy: Bool { st.values.contains { $0.inFlight } }
     var habitRunning = false
     var habitLastRun: Date? = UserDefaults.standard.object(forKey: HabitGate.defaultsKey) as? Date
@@ -184,6 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let f = freshness()
         if f != shownFreshness { shownFreshness = f; updateStatusItem(); if popover.isShown { updateModel() } }
         else if popover.isShown && model.habitWait != habitWaitText(now) { updateModel() }
+        updateRefreshFeedback(now: now)
     }
 
     func start(_ p: Provider, now: Date) {
@@ -220,6 +222,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 qs[p.rawValue] = Merge.merge(qs[p.rawValue], q, staleAfterMin: Merge.staleMainMin, hasLogin: true)
             }
         }
+        // A click during an in-flight lookup queues a new lookup. Do not count the old response
+        // (including a discarded account generation) as completing that queued request.
+        if st[p]!.requestGap == nil {
+            manualRefresh.finish(p, success: !r.quotas.isEmpty && r.quotas.allSatisfy { $0.ok }, now: now)
+        }
         loaded = true
         let secs = String(format: "%.1f", now.timeIntervalSince(started))
         let res = r.quotas.map { $0.ok ? "\(Usage.remainingNumber($0.remaining))%" : ($0.error ?? "실패") }.joined(separator: "/")
@@ -236,15 +243,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Claude's kept login is dropped, so the next lookup reads the login again (a switched account shows at once), and
     // the signed-in account is checked now, so a lookup already running for the old account is not shown.
     func refresh(force: Bool) {
+        let requested = manualRefresh.begin()
+        Log.write("manual refresh accepted")
         Usage.keychainDenied = false
         Usage.forgetClaudeLogin()
         DispatchQueue.global(qos: .utility).async { Usage.noteClaudeAccount(Usage.claudeConfigAccount()) }
         let now = Date()
-        for p in Provider.allCases {
+        for p in requested {
             Sched.clearNetworkBackoff(&st[p]!, now: now)
             Sched.request(&st[p]!, gap: RefreshPolicy.forceMinGap, reason: "새로고침")
         }
         pump()
+        updateRefreshFeedback(now: now)
     }
 
     // wake, unlock, network back: a failed lookup is retried (within its minimum gap); Antigravity is left alone
@@ -290,6 +300,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ?? (loaded ? "UsageGauge: 읽은 한도가 없어요" : "UsageGauge: 불러오는 중")
     }
 
+    func updateRefreshFeedback(now: Date) {
+        let text = manualRefresh.text(states: st, now: now)
+        if model.refreshStatus != text { model.refreshStatus = text }
+        let failed = !manualRefresh.failed.isEmpty
+        if model.refreshFailed != failed { model.refreshFailed = failed }
+    }
+
     func updateModel() {
         let r = rings
         model.gauges = loaded ? zip(r, Design.logoKeys).map { Design.gauge($0, logo: $1) }
@@ -298,6 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.header = Design.header(lastCheck: lastConfirmed, main: qs)
         model.todo = Design.loadTodo()
         model.busy = busy
+        updateRefreshFeedback(now: Date())
         model.habitRunning = habitRunning
         model.habitWait = habitWaitText(Date())
     }
@@ -434,11 +452,15 @@ enum HabitGate {
 }
 
 // shown in the log at launch, so a rebuilt and reinstalled app can be told apart from the previous one
-enum AppVersion { static let string = "1.0.5" }
+enum AppVersion { static let string = "1.0.6" }
 
 @main
 struct UsageGaugeMain {
     static func main() {
+        if let i = CommandLine.arguments.firstIndex(of: "--render-refresh-preview"), i + 1 < CommandLine.arguments.count {
+            _ = NSApplication.shared
+            Preview.renderRefresh(to: CommandLine.arguments[i + 1]); return
+        }
         if CommandLine.arguments.contains("--probe") { runProbe(); return }
         if let i = CommandLine.arguments.firstIndex(of: "--render-preview"), i + 1 < CommandLine.arguments.count {
             renderPreview(CommandLine.arguments[i + 1]); return

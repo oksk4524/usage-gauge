@@ -635,4 +635,43 @@ do {
         check(abs(MenuBarStrip.image([e], now: nowR).size.width - w1 - MenuBarStrip.staleDotSpace) < 0.5, "menu bar: an old value adds its dot")
     }
 }
+// Manual refresh feedback must follow the scheduler, without changing its safety floors.
+do {
+    let now = Date(timeIntervalSince1970: 1000)
+    var states = Dictionary(uniqueKeysWithValues: Provider.allCases.map { ($0, ProviderState()) })
+    var batch = ManualRefresh()
+    check(batch.text(states: states, now: now) == nil, "manual: idle has no feedback")
+    check(batch.begin().count == 4 && batch.pending.count == 4, "manual: first click accepts every service")
+    check(batch.begin().isEmpty && batch.pending.count == 4, "manual: repeat click joins, never resets the batch")
+    check(batch.text(states: states, now: now)!.contains("Claude 조회 준비 중"), "manual: immediate acknowledgement")
+    states[.codex]!.inFlight = true
+    states[.claude]!.lastStart = now; states[.claude]!.floorGap = 90; states[.claude]!.requestGap = 10
+    states[.agy]!.lastStart = now; states[.agy]!.floorGap = 600; states[.agy]!.requestGap = 10
+    let text = batch.text(states: states, now: now)!
+    check(text.contains("Codex 조회 중"), "manual: actual in-flight lookup shown")
+    check(text.contains("Claude 1분 30초 뒤 조회"), "manual: Claude floor is visible")
+    check(text.contains("Antigravity 10분 0초 뒤 조회"), "manual: agy floor is visible")
+    check(batch.text(states: states, now: now.addingTimeInterval(56))!.contains("Claude 34초 뒤 조회"), "manual: countdown advances")
+    states[.claude]!.rateLimited = true; states[.claude]!.blockedUntil = now.addingTimeInterval(3600)
+    check(batch.text(states: states, now: now)!.contains("60분 0초 뒤 조회 (요청 제한)"), "manual: Retry-After shown, not bypassed")
+    batch.finish(.codex, success: true, now: now)
+    check(!batch.text(states: states, now: now)!.contains("Codex"), "manual: completed service leaves pending list")
+    batch.finish(.claude, success: false, now: now)
+    check(batch.text(states: states, now: now)!.contains("Claude 조회 실패"), "manual: failure visible even while another service waits")
+    var repeated = batch
+    check(repeated.begin() == [.codex, .claude] && repeated.pending.count == 4 && repeated.failed.isEmpty, "manual: repeat click rechecks completed services without duplicating pending ones")
+    batch.finish(.grok, success: true, now: now); batch.finish(.agy, success: true, now: now)
+    check(batch.text(states: states, now: now) == "Claude 조회 실패, 나머지 완료", "manual: partial failure is never success")
+    batch.finish(.claude, success: true, now: now.addingTimeInterval(1))
+    check(batch.failed == [.claude] && batch.finishedAt == now, "manual: unrelated automatic response cannot rewrite result")
+    check(batch.text(states: states, now: now.addingTimeInterval(15)) == nil, "manual: completion expires rather than claiming old success")
+    check(batch.begin().count == 4 && batch.failed.isEmpty && batch.finishedAt == nil, "manual: next refresh clears previous outcome")
+    for p in Provider.allCases { batch.finish(p, success: true, now: now) }
+    check(batch.text(states: states, now: now) == "새로고침 완료", "manual: success requires all services")
+    _ = batch.begin()
+    for p in Provider.allCases { batch.finish(p, success: false, now: now) }
+    check(!batch.text(states: states, now: now)!.contains("나머지 완료"), "manual: total failure never claims any success")
+    let model = PopoverModel()
+    check(model.refreshStatus == nil && !model.refreshFailed, "manual: normal UI unchanged before a click")
+}
 print("RESULT \(passed) mac logic tests passed")

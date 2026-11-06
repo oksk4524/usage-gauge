@@ -10,6 +10,8 @@ final class PopoverModel: ObservableObject {
     @Published var rows: [Design.Row] = []
     @Published var todo: Design.Todo?
     @Published var busy = false
+    @Published var refreshStatus: String?
+    @Published var refreshFailed = false
     @Published var habitRunning = false
     @Published var habitWait: String?   // "N분 뒤에 다시 돌릴 수 있어요" within 10 min of the last run
     // hover and spin state of the footer buttons (an object, since this SDK's @State needs a macro plugin the
@@ -325,6 +327,15 @@ struct PopoverView: View {
                     .padding(.trailing, 2)
             }
             .padding(.top, 8)
+            if let status = model.refreshStatus {
+                Text(status)
+                    .font(.system(size: 11))
+                    .foregroundColor(Color(model.refreshFailed ? Palette.amber : s.sub))
+                    .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 2).padding(.top, 6)
+                    .accessibilityLabel(status)
+            }
         }
         .padding(.top, 14).padding(.horizontal, 14).padding(.bottom, 10)
         .frame(width: 318)
@@ -377,6 +388,46 @@ enum Preview {
             .background(RoundedRectangle(cornerRadius: 5).fill(Color(white: 0.5, opacity: 0.22)))
             .frame(width: 318, height: 26, alignment: .trailing)
             .background(dark ? Color(nsColor: Palette.hex(0x1d1c20)) : Color(nsColor: Palette.hex(0xe9e8ec)))
+        }
+    }
+
+    // Offline regression captures: real view and scheduler text, no API calls or login reads.
+    @MainActor
+    static func renderRefresh(to dir: String) {
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let now = Date()
+        var states = Dictionary(uniqueKeysWithValues: Provider.allCases.map { ($0, ProviderState()) })
+        states[.claude]!.lastStart = now; states[.claude]!.floorGap = 90
+        states[.claude]!.requestGap = 10
+        states[.agy]!.lastStart = now; states[.agy]!.floorGap = 600
+        states[.agy]!.requestGap = 10
+        states[.codex]!.inFlight = true; states[.grok]!.inFlight = true
+        var batch = ManualRefresh(); _ = batch.begin()
+        let waiting = batch.text(states: states, now: now)!
+        for p in Provider.allCases { batch.finish(p, success: true, now: now) }
+        let done = batch.text(states: states, now: now)!
+        _ = batch.begin()
+        for p in Provider.allCases { batch.finish(p, success: p != .claude, now: now) }
+        let failed = batch.text(states: states, now: now)!
+        for dark in [false, true] {
+            for (name, text, error) in [("before", nil as String?, false), ("waiting", waiting, false), ("done", done, false), ("failed", failed, true)] {
+                let m = mockModel(now: now, tz: TimeZone(identifier: "Asia/Seoul")!)
+                m.todo = nil; m.rows = Array(m.rows.prefix(5))
+                m.refreshStatus = text; m.refreshFailed = error
+                let v = PopoverView(model: m, forcedDark: dark, rounded: true)
+                    .padding(12).background(Color(nsColor: Palette.hex(0x171717)))
+                let p = (dir as NSString).appendingPathComponent("refresh-\(name)-\(dark ? "dark" : "light").png")
+                // NSViewRepresentable tracking areas cannot be drawn by ImageRenderer.
+                let host = NSHostingView(rootView: v)
+                host.frame = NSRect(origin: .zero, size: host.fittingSize)
+                host.layoutSubtreeIfNeeded()
+                if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                    host.cacheDisplay(in: host.bounds, to: bitmap)
+                    if let data = bitmap.representation(using: .png, properties: [:]) {
+                        try? data.write(to: URL(fileURLWithPath: p)); print(p)
+                    }
+                }
+            }
         }
     }
 
