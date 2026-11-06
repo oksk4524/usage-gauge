@@ -161,9 +161,9 @@ check(Design.todo(snapshot: snap([]), names: [:], helpers: [], now: nowS) == nil
 check(Design.todo(snapshot: snap([["session": "s1", "lastAt": iso(nowS), "lastContext": 399999]]), names: [:], helpers: [], now: nowS) == nil, "todo: hidden under 40만 tokens")
 check(Design.todo(snapshot: snap([["session": "s1", "lastAt": iso(nowS.addingTimeInterval(-6 * 3600)), "lastContext": 900000]]), names: [:], helpers: [], now: nowS) == nil, "todo: hidden after 6 hours")
 check(Design.todo(snapshot: snap([long]), names: [:], helpers: ["s1"], now: nowS) == nil, "todo: helper conversations skipped")
-check(Design.todo(snapshot: snap([long]), names: ["s1": "[유령마작] 점검, 스토리, 최적화"], helpers: [], now: nowS)
-      == Design.Todo(name: "\"[유령마작] 점검, 스토리, 최적화\"", tokens: "85.2만 토큰"), "todo: conversation title and context, dashboard number format")
-check(Design.todo(snapshot: snap([long, ["session": "s2", "project": "p2", "lastAt": iso(nowS), "lastContext": 1200000]]), names: ["p2": "맞고"], helpers: [], now: nowS)?.name == "맞고 대화", "todo: the largest one first, project name when untitled")
+check(Design.todo(snapshot: snap([long]), names: ["s1": "[랜딩 페이지] 점검, 문구, 최적화"], helpers: [], now: nowS)
+      == Design.Todo(name: "\"[랜딩 페이지] 점검, 문구, 최적화\"", tokens: "85.2만 토큰"), "todo: conversation title and context, dashboard number format")
+check(Design.todo(snapshot: snap([long, ["session": "s2", "project": "p2", "lastAt": iso(nowS), "lastContext": 1200000]]), names: ["p2": "날씨앱"], helpers: [], now: nowS)?.name == "날씨앱 대화", "todo: the largest one first, project name when untitled")
 check(Design.compact(1_199_522_966) == "12억" && Design.compact(950000) == "95만" && Design.compact(1234) == "1,234", "compact numbers like the dashboard")
 check(Design.logoFile("codex", dark: false) == "codex-dark" && Design.logoFile("grok", dark: false) == "grok-dark" && Design.logoFile("claude", dark: false) == "claude" && Design.logoFile("codex", dark: true) == "codex", "light screens use the dark-ink logos")
 // ---- menu bar variant C ----
