@@ -51,7 +51,7 @@ If you trust the file and SmartScreen offers the option, select **More info > Ru
 
 Credentials are read without being changed by default. Requests go directly to each service; UsageGauge has no collection server or telemetry.
 
-The 1.0.0 installer has an experimental Claude/Grok renewal setting, off by default. If enabled from the right-click menu, it saves refreshed tokens to those tools' credential files, and if the official tool refreshes at the same instant, you may need to sign in again. Leave it off. The current source has removed this setting; the next installer will not have it.
+Since 1.1.0 there is no login renewal setting: UsageGauge never writes to credential files, and signing in again is left to the official tools. The 1.0.0 installer had an experimental Claude/Grok renewal setting, off by default; if you turned it on there, install the latest version.
 
 ## Reporting a problem
 
