@@ -3,11 +3,16 @@
 ## Your AI quota, in sight
 
 See the weekly quota you have left in Claude Code, Codex, Grok and Antigravity without opening a terminal to check.
-On Windows it sits on the taskbar; on macOS, in the menu bar.
+Works on **Windows** (next to the taskbar clock) and **macOS** (in the menu bar).
 
 ![UsageGauge on the Windows taskbar](docs/widget.png)
 
-**[Download for Windows](https://github.com/oksk4524/usage-gauge/releases/latest/download/UsageGauge-Setup.exe)** | macOS: [build from source](#macos)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/mac-menubar-dark.png">
+  <img src="docs/mac-menubar.png" width="286" alt="UsageGauge in the macOS menu bar">
+</picture>
+
+**[Download for Windows](https://github.com/oksk4524/usage-gauge/releases/latest/download/UsageGauge-Setup.exe)** | **[Install on macOS](#macos)**
 
 Free and open source. Windows 10/11 and macOS 13 or later. Uses your existing local tool logins.
 
@@ -17,9 +22,20 @@ When Claude is running low, it helps to know what Codex has left. UsageGauge put
 
 Each gauge shows **weekly quota remaining**, with the time until it resets. Hover for the exact reset time. You do not need a dashboard or terminal window open just to see where you stand.
 
-On macOS, click the menu bar item for one row per service, with the weekly limit and the 5-hour limit side by side.
+## On the Mac
 
-<img src="docs/mac-popover.png" width="342" alt="UsageGauge popover on the macOS menu bar">
+The macOS version is a native menu bar app with the same readings as the Windows widget.
+
+<img src="docs/mac-popover.png" width="342" alt="UsageGauge popover on the macOS menu bar" align="right">
+
+- **In the menu bar:** each service you use gets its logo, a small bar and the weekly percent left. A service that has reached its limit dims and shows the day it refills.
+- **Hover** for the exact numbers and reset times.
+- **Click** for one row per service, with the weekly limit and the 5-hour limit side by side, and when each resets.
+- **Refresh** shows what each service is doing: checking now, or how long until it may be asked again (the services limit how often they can be checked).
+- **Follows your work:** it checks again shortly after you use Codex, Claude Code, Grok or Antigravity, instead of only on a timer.
+- **English or Korean**, following your macOS language; right-click the menu bar item to switch or quit.
+
+<br clear="right">
 
 ## Leave it running
 
@@ -66,18 +82,28 @@ The 1.0.0 installer still includes an optional Claude/Grok login renewal setting
 
 ### macOS
 
-There is no signed download yet. Build it with the Xcode Command Line Tools (`xcode-select --install`); no Xcode project is needed.
+macOS 13 or later. There is no download yet: you build the app on your own Mac with Apple's Command Line Tools (no Xcode project).
+
+1. Sign in locally to at least one supported tool: **Codex CLI, Claude Code, Grok CLI or Antigravity CLI (`agy`)**.
+2. Install the Command Line Tools if you don't have them: `xcode-select --install`
+3. Build and open it:
 
 ```sh
 git clone https://github.com/oksk4524/usage-gauge
 cd usage-gauge
-mac/build.sh        # builds mac/build/UsageGauge.app
-mac/test.sh         # logic tests, no network
+mac/build.sh                                   # builds mac/build/UsageGauge.app
+cp -R mac/build/UsageGauge.app /Applications/
+open /Applications/UsageGauge.app
 ```
 
-Move `mac/build/UsageGauge.app` to Applications and open it. It is not notarized, so macOS may ask you to confirm the first time. To start it at login, add it under **System Settings > General > Login Items**.
+4. Look at the right side of the menu bar. To start it at login, add it under **System Settings > General > Login Items**.
 
-The interface follows the macOS language (English or Korean); right-click the menu bar item to change it. More in [mac/README.md](mac/README.md) (Korean).
+**Update:** right-click the menu bar item, choose **Quit**, then run `git pull && mac/build.sh` and copy the app again.
+**Remove:** quit it, delete `/Applications/UsageGauge.app` and, if you like, `~/Library/Application Support/UsageGauge`.
+
+The app is signed only on your Mac and not notarized; because you build it yourself, macOS normally opens it without a download warning.
+Claude Code's login is read from the keychain item `Claude Code-credentials` through `/usr/bin/security`, which is usually already allowed for that item.
+`mac/test.sh` runs the logic tests without network access. More in [mac/README.md](mac/README.md) (Korean).
 
 ## Questions
 
