@@ -396,6 +396,7 @@ enum Preview {
     static func renderRefresh(to dir: String) {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let now = Date()
+        renderMenuBar(to: dir, now: now)
         var states = Dictionary(uniqueKeysWithValues: Provider.allCases.map { ($0, ProviderState()) })
         states[.claude]!.lastStart = now; states[.claude]!.floorGap = 90
         states[.claude]!.requestGap = 10
@@ -433,6 +434,43 @@ enum Preview {
                     }
                 }
             }
+        }
+    }
+
+    // The menu bar item with example values, as the README shows it: 2x pixels, light and dark menu bar.
+    @MainActor
+    static func renderMenuBar(to dir: String, now: Date) {
+        let day: TimeInterval = 86400
+        let es = [
+            MenuBarStrip.Entry(logo: "codex", name: "Codex", window: MenuBarStrip.weekLabel, remaining: 38, reset: now.addingTimeInterval(3 * day), stale: false),
+            MenuBarStrip.Entry(logo: "claude", name: "Claude", window: MenuBarStrip.weekLabel, remaining: 86, reset: now.addingTimeInterval(5 * day), stale: false),
+            MenuBarStrip.Entry(logo: "gemini", name: "Gemini", window: MenuBarStrip.weekLabel, remaining: 100, reset: now.addingTimeInterval(day * 6), stale: false),
+            MenuBarStrip.Entry(logo: "antigravity", name: "Antigravity", window: MenuBarStrip.weekLabel, remaining: 100, reset: now.addingTimeInterval(day * 6), stale: false),
+            MenuBarStrip.Entry(logo: "grok", name: "Grok", window: MenuBarStrip.weekLabel, remaining: 0, reset: now.addingTimeInterval(day * 4 + 3600), stale: false),
+        ]
+        let strip = MenuBarStrip.image(es, now: now)
+        let pad: CGFloat = 10, h: CGFloat = 26
+        let size = NSSize(width: strip.size.width + pad * 2, height: h)
+        for dark in [false, true] {
+            guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
+                                             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { continue }
+            rep.size = size
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            (dark ? Palette.hex(0x2b2a2f) : Palette.hex(0xeceaee)).setFill()
+            NSRect(origin: .zero, size: size).fill()
+            // the strip is a template image: black ink, recoloured like the menu bar does
+            let ink = NSImage(size: strip.size, flipped: false) { r in
+                strip.draw(in: r)
+                (dark ? NSColor.white : NSColor.black).set()
+                r.fill(using: .sourceAtop)
+                return true
+            }
+            ink.draw(in: NSRect(x: pad, y: (h - strip.size.height) / 2, width: strip.size.width, height: strip.size.height))
+            NSGraphicsContext.restoreGraphicsState()
+            let p = (dir as NSString).appendingPathComponent("menubar-\(dark ? "dark" : "light").png")
+            if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: URL(fileURLWithPath: p)); print(p) }
         }
     }
 
