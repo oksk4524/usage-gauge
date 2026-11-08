@@ -21,8 +21,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Weekly AI quota gauges on the Windows taskbar")]
 [assembly: AssemblyCompany("oksk4524")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.1.1.0")]
+[assembly: AssemblyFileVersion("1.1.1.0")]
 
 class Quota
 {
