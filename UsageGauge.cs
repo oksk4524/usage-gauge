@@ -217,6 +217,14 @@ static class Native
         catch { return false; }
     }
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
+    [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int index);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int value, int size);
+    // Cloaked windows (suspended store apps, windows on other virtual desktops) report visible but are not shown.
+    public static bool IsCloaked(IntPtr h)
+    {
+        try { int v; return DwmGetWindowAttribute(h, 14 /*DWMWA_CLOAKED*/, out v, 4) == 0 && v != 0; }
+        catch { return false; }
+    }
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
@@ -1450,14 +1458,41 @@ class GaugeForm : Form
         if (ShellClasses.Contains(Native.ClassOf(fg))) return false;
         if (Native.IsIconic(fg)) return false;
         Native.RECT r; if (!Native.GetWindowRect(fg, out r)) return false;
-        var scr = myScreen;   // cached; refreshed by the guard / move / display change
+        return CoversAsFullscreen(fg, r, myScreen);   // myScreen: cached; refreshed by the guard / move / display change
+    }
+    static bool CoversAsFullscreen(IntPtr h, Native.RECT r, Rectangle scr)
+    {
         if (!(r.L <= scr.Left && r.T <= scr.Top && r.R >= scr.Right && r.B >= scr.Bottom)) return false;
         // A normal maximized window overhangs the screen by its ~8px frame (and only covers the whole
         // screen when the taskbar auto-hides). Real fullscreen (F11, video, games) matches the screen edge.
-        if (Native.IsZoomed(fg) && (scr.Left - r.L) >= 4 && (r.R - scr.Right) >= 4) return false;
+        if (Native.IsZoomed(h) && (scr.Left - r.L) >= 4 && (r.R - scr.Right) >= 4) return false;
         return true;
     }
-    bool ShouldHide() { return IsFullscreenForeground() || TaskbarAutoHidden(); }
+    // With two monitors, a fullscreen video can stay in front on the widget's monitor while the user works
+    // on the other one, so it is no longer the foreground window. Look at what is actually on top of this
+    // monitor: the highest ordinary (not always-on-top) window that shows on it. Always-on-top windows are
+    // skipped because full-screen overlays (pen input canvas, game/recording overlays) are click-through
+    // layers, not apps; an always-on-top fullscreen app is still caught by the foreground check.
+    bool FullscreenOnMyScreen()
+    {
+        var scr = myScreen;
+        IntPtr h = Native.GetWindow(Handle, 0);   // GW_HWNDFIRST: top of the z-order
+        for (int n = 0; n < 512 && h != IntPtr.Zero; n++, h = Native.GetWindow(h, 2))   // GW_HWNDNEXT
+        {
+            if (h == Handle || !Native.IsWindowVisible(h) || Native.IsIconic(h)) continue;
+            int ex = Native.GetWindowLong(h, -20);   // GWL_EXSTYLE
+            if ((ex & 0x8) != 0 || (ex & 0x20) != 0) continue;   // WS_EX_TOPMOST, WS_EX_TRANSPARENT
+            Native.RECT r; if (!Native.GetWindowRect(h, out r)) continue;
+            // must really show on this monitor: a window maximized on the neighbour reaches 8px over the edge
+            int w = Math.Min(r.R, scr.Right) - Math.Max(r.L, scr.Left), ht = Math.Min(r.B, scr.Bottom) - Math.Max(r.T, scr.Top);
+            if (w < 16 || ht < 16) continue;
+            if (Native.IsCloaked(h)) continue;
+            if (ShellClasses.Contains(Native.ClassOf(h))) return false;   // desktop, alt-tab, start ... on top
+            return CoversAsFullscreen(h, r, scr);
+        }
+        return false;
+    }
+    bool ShouldHide() { return IsFullscreenForeground() || FullscreenOnMyScreen() || TaskbarAutoHidden(); }
     // Cached system state for the hot path (window-move events can fire 100+ times a second).
     Rectangle myScreen = Screen.PrimaryScreen.Bounds;
     bool autoHideOn = false;
